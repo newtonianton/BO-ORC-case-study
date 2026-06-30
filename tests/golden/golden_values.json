@@ -1,0 +1,77 @@
+{
+  "note": "Pure-fluid ORC sim via HEOS backend; mixing-rule Tc/Pc via HEOS pure props. Original REFPROP-only _simulation is not runnable on non-REFPROP machines; ORC formulas were ported verbatim. Regenerate with tests/capture_golden.py.",
+  "backend": "HEOS",
+  "orc": [
+    {
+      "wf": "R134a",
+      "p_evap": 23.0,
+      "p_cond": 4.0,
+      "eta": 0.09049966233629295,
+      "sink_pinch": 26.06939605509382,
+      "source_pinch": -61.25625390074947
+    },
+    {
+      "wf": "Propane",
+      "p_evap": 18.0,
+      "p_cond": 3.0,
+      "eta": 0.10354617466753598,
+      "sink_pinch": 49.17607667603522,
+      "source_pinch": -82.71518269435114
+    },
+    {
+      "wf": "R245fa",
+      "p_evap": 8.0,
+      "p_cond": 1.0,
+      "eta": 0.09597078418754748,
+      "sink_pinch": 20.279858812069676,
+      "source_pinch": -54.446441568461125
+    },
+    {
+      "wf": "Pentane",
+      "p_evap": 6.0,
+      "p_cond": 1.0,
+      "eta": 0.08901601458462977,
+      "sink_pinch": -0.6741892395808122,
+      "source_pinch": -34.47990134549485
+    },
+    {
+      "wf": "Toluene",
+      "p_evap": 3.0,
+      "p_cond": 0.2,
+      "eta": 0.11253935319091372,
+      "sink_pinch": -26.924036982524512,
+      "source_pinch": 18.81640316955918
+    },
+    {
+      "wf": "Ammonia",
+      "p_evap": 30.0,
+      "p_cond": 5.0,
+      "eta": 0.10052502490145805,
+      "sink_pinch": 30.850512326404385,
+      "source_pinch": -69.26014074677454
+    }
+  ],
+  "mixing_rules": [
+    {
+      "f1": "R32",
+      "f2": "R125",
+      "x1": 0.5,
+      "Tc": 345.2161414527684,
+      "Pc": 4451309.812877942
+    },
+    {
+      "f1": "R32",
+      "f2": "R134a",
+      "x1": 0.7,
+      "Tc": 358.1420902900878,
+      "Pc": 5129344.960228643
+    },
+    {
+      "f1": "Pentane",
+      "f2": "Propane",
+      "x1": 0.3,
+      "Tc": 399.8330062270094,
+      "Pc": 3940931.8829562794
+    }
+  ]
+}

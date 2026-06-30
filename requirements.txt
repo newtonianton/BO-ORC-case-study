@@ -1,0 +1,20 @@
+# Runtime dependencies for orc_bo, pinned to the versions validated in the project venv.
+# Mixture thermodynamics additionally require a licensed REFPROP installation reachable
+# by CoolProp; pure-fluid HEOS calculations work without it.
+
+# Core scientific computing
+numpy==2.5.0
+pandas==3.0.4
+scipy==1.18.0
+scikit-learn==1.9.0
+
+# PyTorch / Bayesian optimization stack
+torch==2.12.1
+gpytorch==1.15.2
+botorch==0.18.1
+
+# Thermodynamic properties (REFPROP backend used for mixtures when available)
+CoolProp==8.0.0
+
+# Development / testing
+pytest==9.0.2

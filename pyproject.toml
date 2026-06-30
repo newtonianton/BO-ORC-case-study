@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orc_bo"
+version = "0.1.0"
+description = "Constrained Bayesian optimization for ORC working-fluid (pure and mixture) selection"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "torch",
+    "gpytorch",
+    "botorch",
+    "CoolProp",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+orc-bo = "orc_bo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["orc_bo*"]
+
+[tool.setuptools.package-data]
+orc_bo = ["data/*.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "refprop: test requires the REFPROP backend (auto-skipped when unavailable)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
