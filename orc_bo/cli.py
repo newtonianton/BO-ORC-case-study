@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from .config import AppConfig, load_config
-from .logging_setup import configure_logging
+from .logging_setup import configure_logging, configure_warnings
 from .seeding import base_seed
 
 
@@ -66,6 +66,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     configure_logging(args.log_level, force=True)
+    configure_warnings(show=str(args.log_level).upper() == "DEBUG")
     _seed_everything()
     config = _build_config(args)
     csv_path = args.csv or config.paths.data_csv

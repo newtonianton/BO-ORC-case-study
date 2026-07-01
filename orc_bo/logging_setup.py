@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from typing import Optional
 
 _DEFAULT_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -65,3 +66,31 @@ def get_logger(name: str) -> logging.Logger:
     if not name.startswith(ROOT_LOGGER_NAME):
         name = f"{ROOT_LOGGER_NAME}.{name}"
     return logging.getLogger(name)
+
+
+def configure_warnings(show: bool = False) -> None:
+    """Silence benign GP/BO numerical warnings unless ``show`` is set.
+
+    Small-data Bayesian optimization routinely emits two harmless warnings: a
+    ``NumericalWarning`` when GPyTorch adds Cholesky jitter to a near-singular covariance,
+    and an ``OptimizationWarning`` when the GP hyperparameter fit stops before full
+    convergence. Neither affects correctness. This filters them by category so normal runs
+    stay readable; pass ``show=True`` (e.g. under DEBUG logging) to see them again.
+
+    Call this only from application entry points (CLI, benchmarks), never as a library
+    import side effect.
+    """
+    if show:
+        return
+    try:
+        from botorch.exceptions.warnings import OptimizationWarning
+
+        warnings.filterwarnings("ignore", category=OptimizationWarning)
+    except Exception:  # pragma: no cover - botorch always present at runtime
+        pass
+    try:
+        from linear_operator.utils.warnings import NumericalWarning
+
+        warnings.filterwarnings("ignore", category=NumericalWarning)
+    except Exception:  # pragma: no cover - linear_operator always present at runtime
+        pass

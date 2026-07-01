@@ -17,7 +17,7 @@ from typing import List, Optional, Set
 import torch
 from scipy.stats import qmc
 
-from botorch.acquisition.monte_carlo import qExpectedImprovement
+from botorch.acquisition import qLogExpectedImprovement
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.outcome import Standardize
@@ -149,7 +149,7 @@ def run_onestage(
         for iteration in range(1, max(0, scbo_budget) + 1):
             gp = SingleTaskGP(x_train, y_train, outcome_transform=Standardize(m=1))
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
-            acqf = qExpectedImprovement(model=gp, best_f=y_train.max(), sampler=sampler)
+            acqf = qLogExpectedImprovement(model=gp, best_f=y_train.max(), sampler=sampler)
             x_cand, _ = optimize_acqf(
                 acq_function=acqf, bounds=bounds, q=1,
                 num_restarts=min(10, 2 * t_dim), raw_samples=config.bo.raw_samples,

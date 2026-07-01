@@ -1,0 +1,7 @@
+phase,order,mixture,mode,comp1,comp2,x1,Tc_K,Pc_Pa,eta,p_evap_bar,p_cond_bar
+SCBO,1,DiethylEther[0.49]&SulfurDioxide[0.51],mixture,DiethylEther,SulfurDioxide,0.49,448.8972243584053,5089519.726327261,0.11583827973455245,23.68721248242094,2.0382854580864103
+SCBO,2,n-Undecane[0.49]&MethylLinoleate[0.51],mixture,n-Undecane,MethylLinoleate,0.49,720.5021063040313,1596069.261710638,-0.05,-1.0,-1.0
+SCBO,3,Isohexane[0.41]&Dichloroethane[0.59],mixture,Isohexane,Dichloroethane,0.41000000000000003,535.3895852275706,4038038.0885215336,-0.05,-1.0,-1.0
+STEP8,4,EthylBenzene[0.49]&Benzene[0.51],mixture,EthylBenzene,Benzene,0.49,589.0188423717163,4180320.9113468574,0.1263293320911331,2.2385324934053825,0.07030916180981467
+STEP8,5,Methanol[0.49]&R141b[0.51],mixture,Methanol,R141b,0.49,495.0809753643448,5533011.105990503,-0.05,-1.0,-1.0
+STEP8,6,MM[0.49]&HeavyWater[0.51],mixture,MM,HeavyWater,0.49,582.5250313797329,3606455.2091465644,-0.05,-1.0,-1.0

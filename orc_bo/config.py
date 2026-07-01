@@ -88,11 +88,11 @@ class BOConfig:
 class TwoStageConfig:
     """Hyperparameters specific to the two-stage property-targeting pipeline."""
 
-    n_property_targets: int = 5
-    required_valid_init: int = 5
+    n_property_targets: int = 8
+    required_valid_init: int = 3
     target_budget: int = 2
-    radius_norm: float = 0.05
-    gpc_feasibility_threshold: float = 0.8
+    radius_norm: float = 0.15
+    gpc_feasibility_threshold: float = 0.5
     gpc_candidates: int = 20_000
     gpc_max_rounds: int = 8
     gpc_steps: int = 200
