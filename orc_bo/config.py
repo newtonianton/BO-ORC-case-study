@@ -77,8 +77,10 @@ class BOConfig:
     success_tolerance: int = 3
     # Acquisition optimization (outer fluid-space loop).
     mc_samples: int = 512
-    num_restarts: int = 20
+    num_restarts: int = 10
     raw_samples: int = 512
+    # Whole-SCBO retry attempts when no feasible operating point is found.
+    scbo_max_retries: int = 8
     # GP fitting noise schedule.
     gp_noise: float = 1e-5
     gp_max_noise: float = 1.0
@@ -89,9 +91,11 @@ class TwoStageConfig:
     """Hyperparameters specific to the two-stage property-targeting pipeline."""
 
     n_property_targets: int = 8
+    # required_valid_init counts REACHED targets (reachability), not validity/operability.
     required_valid_init: int = 3
     target_budget: int = 2
     radius_norm: float = 0.15
+    # Probability threshold for the REACHABILITY GPC (a property region is reachable).
     gpc_feasibility_threshold: float = 0.5
     gpc_candidates: int = 20_000
     gpc_max_rounds: int = 8
@@ -100,6 +104,8 @@ class TwoStageConfig:
     # Step-8 cEI exploitation loop.
     system_budget: int = 3
     failure_allowance: int = 3
+    # Multiply the validity GPC (P_sys) into the Step-8 cEI score; off = ablation.
+    use_orc_feasibility: bool = True
 
 
 @dataclass(frozen=True)

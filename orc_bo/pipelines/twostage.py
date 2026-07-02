@@ -6,13 +6,30 @@ The two-stage method separates *where to look* (property space) from *how to ope
 Stage 1 - Targeting (Steps 1-6)
     Latin-hypercube initial mixtures are realized and their ``(Tc, Pc)`` recorded. Property
     targets are proposed and :func:`orc_bo.targeting.run_targeting` drives mixtures toward
-    them. A variational GP classifier (GPC) over feasibility then proposes additional
-    space-filling targets until ``required_valid_init`` targets are satisfied.
+    them. A **reachability** GP classifier then proposes additional space-filling targets
+    until ``required_valid_init`` targets have been *reached*.
 
 Stage 2 - Realization (Step 7) and exploitation (Step 8)
-    The earliest satisfied targets are handed to SCBO, which optimizes operating conditions
+    The earliest reached targets are handed to SCBO, which optimizes operating conditions
     for each realized mixture. A bounded cEI loop then continues proposing mixtures, weighted
-    by GPC feasibility, until the system budget or failure allowance is exhausted.
+    by **reachability**, until the system budget or failure allowance is exhausted.
+
+Terminology - "feasibility" is deliberately split into three precise notions; the codebase
+uses these words consistently:
+
+* **Reachability** (property-space feasibility): whether some realizable fluid/mixture lies
+  within ``radius_norm`` of a target point in normalized ``(Tc, Pc)`` space. Modelled by the
+  *reachability* GP classifier (``P_prop``); its labels come from
+  :func:`orc_bo.targeting.success_mask`. NOTE: the historical field ``required_valid_init``
+  and log phrase "valid targets" both refer to *reachability* (a target was reached), NOT to
+  validity below.
+* **Validity** (operability feasibility): whether a fluid/mixture admits at least one ORC
+  operating point that satisfies the constraints, i.e. SCBO returns a positive efficiency.
+  Modelled by the *validity* GP classifier (``P_sys``).
+* **Constraint feasibility** (operating point): whether a specific ``(p_evap, p_cond)``
+  satisfies the pressure-ordering and pinch constraints. This is the SCBO inner-loop notion
+  (see :mod:`orc_bo.scbo`); a fluid is *valid* iff at least one operating point is
+  constraint-feasible.
 
 This pipeline targets mixtures (the geometric projection produces binary mixtures). It
 reuses the validated :mod:`orc_bo.targeting`, :mod:`orc_bo.scbo` and pipeline ``common``
@@ -36,6 +53,7 @@ from ..scbo import optimize_operating_conditions_robust
 from ..seeding import base_seed
 from ..targeting import (
     PropNormalizer,
+    fit_target_gp,
     gpc_predict_proba,
     greedy_maximin,
     run_targeting,
@@ -137,29 +155,32 @@ def run_twostage(
         fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget,
     )
 
-    # ---- Step 6: GPC space-filling rounds until enough targets are satisfied ----
+    # ---- Step 6: reachability-GPC space-filling rounds until enough targets are reached ----
     normalizer.maybe_expand(p_real)
     flags, _, _ = success_mask(
         normalizer.to_norm(p_real, clip=False),
         normalizer.to_norm(asked_targets_real, clip=False), ts.radius_norm,
     )
+    # labels/num_valid track REACHABILITY (a target was reached), not validity (operability).
     labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
-    num_valid = int(sum(flags))
-    logger.info("[Step 6] initially valid targets: %d/%d", num_valid, ts.required_valid_init)
+    num_reached = int(sum(flags))
+    logger.info("[Step 6] initially reached targets: %d/%d", num_reached, ts.required_valid_init)
 
     gpc_round = 0
-    while num_valid < ts.required_valid_init and gpc_round < ts.gpc_max_rounds:
+    while num_reached < ts.required_valid_init and gpc_round < ts.gpc_max_rounds:
         gpc_round += 1
         x_targets = normalizer.to_norm(asked_targets_real, clip=False)
+        # Reachability GPC: P(a target here is reachable by some realizable mixture).
         model, likelihood = train_gpc(x_targets, labels, steps=ts.gpc_steps, lr=ts.gpc_lr)
         candidates = torch.rand(ts.gpc_candidates, len(PROP_NAMES), **TKWARGS)
         proba = gpc_predict_proba(model, likelihood, candidates)
-        feasible = candidates[proba >= ts.gpc_feasibility_threshold]
-        if feasible.numel() == 0:
-            logger.info("[Step 6] GPC found no feasible region in round %d; stopping", gpc_round)
+        reachable = candidates[proba >= ts.gpc_feasibility_threshold]
+        if reachable.numel() == 0:
+            logger.info("[Step 6] reachability GPC found no reachable region in round %d; stopping",
+                        gpc_round)
             break
-        to_add = ts.required_valid_init - num_valid
-        new_targets_norm = greedy_maximin(x_targets, feasible, k=to_add)
+        to_add = ts.required_valid_init - num_reached
+        new_targets_norm = greedy_maximin(x_targets, reachable, k=to_add)
         new_targets_real = normalizer.to_real(new_targets_norm)
 
         metadata, p_real, evaluated_mixtures, _ = run_targeting(
@@ -173,9 +194,9 @@ def run_twostage(
             normalizer.to_norm(asked_targets_real, clip=False), ts.radius_norm,
         )
         labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
-        num_valid = int(sum(flags))
-        logger.info("[Step 6] valid targets after round %d: %d/%d",
-                    gpc_round, num_valid, ts.required_valid_init)
+        num_reached = int(sum(flags))
+        logger.info("[Step 6] reached targets after round %d: %d/%d",
+                    gpc_round, num_reached, ts.required_valid_init)
 
     # ---- Step 7: SCBO on the earliest satisfied targets' realized mixtures ----
     _, success_rows, _ = success_mask(
@@ -187,6 +208,8 @@ def run_twostage(
     best_eta = -float("inf")
     best_name = "(none)"
     n_scbo = 0
+    scbo_props: List[List[float]] = []
+    scbo_eta: List[float] = []
     with RunWriter(subdir) as writer:
         order = 0
         for idx in realized_ids[: ts.required_valid_init]:
@@ -200,21 +223,24 @@ def run_twostage(
             order += 1
             n_scbo += 1
             writer.record("SCBO", order, "mixture", cand, eta, p_evap, p_cond)
+            scbo_props.append([cand.tc, cand.pc])
+            scbo_eta.append(eta)
             logger.info("[Step 7] %s: eta=%.5f", cand.name, eta)
             if eta > best_eta:
                 best_eta, best_name = eta, cand.name
 
-        # ---- Step 8: bounded cEI exploitation loop (GPC-feasibility weighted) ----
+        # ---- Step 8: bounded cEI exploitation (EI x reachability x validity weighted) ----
         best_eta, best_name, order = _exploitation_loop(
             writer, order, fluids, onehot, evaluated_mixtures, normalizer,
             asked_targets_real, labels, simulator, config, best_eta, best_name,
+            scbo_props, scbo_eta,
         )
 
     result = TwoStageResult(
         best_name=best_name,
         best_eta=best_eta if best_eta > -float("inf") else simulator.orc.infeasible_penalty,
         n_scbo=n_scbo,
-        n_targets_satisfied=num_valid,
+        n_targets_satisfied=num_reached,
         outdir=subdir,
     )
     logger.info("Two-stage complete: best %s eta=%.5f -> %s",
@@ -235,33 +261,58 @@ def _exploitation_loop(
     config: AppConfig,
     best_eta: float,
     best_name: str,
+    scbo_props: List[List[float]],
+    scbo_eta: List[float],
     n_screen: int = 64,
 ) -> tuple[float, str, int]:
-    """Step-8 exploitation: realize the most property-feasible novel mixture, SCBO it.
+    """Step-8 probability-weighted cEI exploitation loop.
 
-    A GP classifier trained on (normalized property, satisfied?) labels scores screened
-    candidate mixtures by feasibility probability; the most feasible novel candidate is
-    optimized with SCBO. The loop stops after ``system_budget`` proposals or
-    ``failure_allowance`` consecutive infeasible evaluations.
+    Scores screened candidate mixtures by ``EI x P_prop x P_sys`` and SCBOs the best:
+
+    * ``P_prop`` - **reachability** GPC over property-target coordinates: P(a target here is
+      reachable by some realizable mixture).
+    * ``P_sys``  - **validity** GPC over SCBO'd mixtures: P(a constraint-feasible operating
+      point exists, i.e. eta > 0).
+    * ``EI``     - expected efficiency improvement from a GP of (property -> eta), fit on
+      *valid* outcomes only.
+
+    Stops after ``system_budget`` proposals or ``failure_allowance`` consecutive invalid
+    (no feasible operating point) evaluations.
     """
     ts = config.twostage
-    t_dim = onehot.shape[0]
-
     if labels.sum() <= 0:
-        logger.info("[Step 8] no satisfied targets to train the GPC; skipping exploitation")
+        logger.info("[Step 8] no reached targets to train the reachability GPC; skipping")
         return best_eta, best_name, order
 
+    # P_prop: reachability GPC over property-target coordinates.
     x_targets = normalizer.to_norm(asked_targets_real, clip=False)
-    model, likelihood = train_gpc(x_targets, labels, steps=ts.gpc_steps, lr=ts.gpc_lr)
+    prop_model, prop_lik = train_gpc(x_targets, labels, steps=ts.gpc_steps, lr=ts.gpc_lr)
 
     budget = ts.system_budget
     failures = 0
     while budget > 0 and failures < ts.failure_allowance:
-        chosen = _propose_feasible_candidate(
-            model, likelihood, fluids, onehot, evaluated_mixtures, normalizer, config, n_screen
+        # (Re)train the validity GPC (P_sys) and efficiency GP from accumulated outcomes.
+        orc_gpc = orc_lik = eff_gp = None
+        if scbo_props:
+            props_t = normalizer.to_norm(torch.tensor(scbo_props, **TKWARGS), clip=True)
+            valid = [e > 0 for e in scbo_eta]  # validity: a feasible operating point exists
+            # P_sys (validity) needs both valid and invalid examples to classify.
+            if getattr(ts, "use_orc_feasibility", True) and any(valid) and not all(valid):
+                y_valid = torch.tensor([[1.0 if v else 0.0] for v in valid], **TKWARGS)
+                orc_gpc, orc_lik = train_gpc(props_t, y_valid, steps=ts.gpc_steps, lr=ts.gpc_lr)
+            # Efficiency GP for the EI base — VALID outcomes only (eta > 0). The infeasible
+            # penalty is a sentinel, not an efficiency, and would corrupt the regression.
+            valid_pts = [(p, e) for p, e in zip(scbo_props, scbo_eta) if e > 0]
+            if len(valid_pts) >= 3:
+                P_valid = normalizer.to_norm(
+                    torch.tensor([p for p, _ in valid_pts], **TKWARGS), clip=True)
+                y_eta = torch.tensor([e for _, e in valid_pts], **TKWARGS).reshape(-1, 1)
+                eff_gp = fit_target_gp(P_valid, y_eta)
+        chosen = _propose_by_cei(
+            prop_model, prop_lik, orc_gpc, orc_lik, eff_gp, best_eta, fluids, onehot, evaluated_mixtures, normalizer, config, n_screen
         )
         if chosen is None:
-            logger.info("[Step 8] no novel feasible candidate found; stopping")
+            logger.info("[Step 8] no novel candidate could be realized; stopping")
             break
 
         eta, p_evap, p_cond = optimize_operating_conditions_robust(
@@ -270,6 +321,8 @@ def _exploitation_loop(
         order += 1
         budget -= 1
         writer.record("STEP8", order, "mixture", chosen, eta, p_evap, p_cond)
+        scbo_props.append([chosen.tc, chosen.pc]) # outcome goes back into next iteration
+        scbo_eta.append(eta)
         logger.info("[Step 8] %s: eta=%.5f", chosen.name, eta)
         if eta > 0:
             failures = 0
@@ -281,9 +334,13 @@ def _exploitation_loop(
     return best_eta, best_name, order
 
 
-def _propose_feasible_candidate(
-    model,
-    likelihood,
+def _propose_by_cei(
+    prop_model,
+    prop_lik,
+    orc_gpc, 
+    orc_lik,
+    eff_gp,
+    best_eta: float,
     fluids: List[str],
     onehot: torch.Tensor,
     evaluated_mixtures: Set[MixtureKey],
@@ -291,11 +348,10 @@ def _propose_feasible_candidate(
     config: AppConfig,
     n_screen: int,
 ) -> Optional[Candidate]:
-    """Screen random one-hot candidates and return the most property-feasible novel one."""
-    t_dim = onehot.shape[0]
+    """Screen novel candidates; pick max of EI x P_prop x P_sys."""
     realized: List[Candidate] = []
     seen: Set[MixtureKey] = set()
-    suggestions = torch.rand(n_screen, t_dim, **TKWARGS)
+    suggestions = torch.rand(n_screen, onehot.shape[0], **TKWARGS)
     for i in range(n_screen):
         j1, j2, x1 = snap_to_mixture(
             suggestions[i], onehot, evaluated_mixtures,
@@ -311,8 +367,25 @@ def _propose_feasible_candidate(
     if not realized:
         return None
 
-    props = torch.tensor([[c.tc, c.pc] for c in realized], **TKWARGS)
-    proba = gpc_predict_proba(model, likelihood, normalizer.to_norm(props, clip=True))
-    best = realized[int(torch.argmax(proba).item())]
+    props_norm = normalizer.to_norm(
+        torch.tensor([[c.tc, c.pc] for c in realized], **TKWARGS), clip=True
+    )
+
+    # P_prop: reachability (target reachable by some realizable mixture).
+    score = gpc_predict_proba(prop_model, prop_lik, props_norm)
+    # P_sys: validity (a constraint-feasible ORC operating point exists).
+    if orc_gpc is not None:
+        score = score * gpc_predict_proba(orc_gpc, orc_lik, props_norm)
+    # EI: expected efficiency improvement (cEI base) — only with a valid incumbent (eta > 0).
+    if eff_gp is not None and best_eta > 0.0:
+        try:
+            from botorch.acquisition.analytic import LogExpectedImprovement
+            ei = LogExpectedImprovement(eff_gp, best_f=best_eta)
+            with torch.no_grad():
+                score = score * ei(props_norm.unsqueeze(1)).exp()
+        except Exception as exc:  # analytic EI can fail on degenerate posteriors
+            logger.debug("EI term skipped: %s", exc)
+
+    best = realized[int(torch.argmax(score).item())]
     evaluated_mixtures.add((best.j1, best.j2, best.x1))
     return best

@@ -5,10 +5,13 @@ near desirable property targets, then optimizes operating conditions (stage 2, v
 :mod:`orc_bo.scbo`). This module provides the reusable, plotting-free building blocks:
 
 * :class:`PropNormalizer` - adaptive normalization of property coordinates to ``[0, 1]``.
-* :func:`success_mask` - which targets have a realized fluid within a radius.
+* :func:`success_mask` - which targets have been *reached* (a realized fluid within a radius).
 * :func:`fit_target_gp` / :func:`run_targeting` - GP-driven search toward targets.
-* :class:`ApproxGPClassifier` / :func:`train_gpc` / :func:`gpc_predict_proba` - a
-  variational GP classifier over feasibility (for space-filling).
+* :class:`ApproxGPClassifier` / :func:`train_gpc` / :func:`gpc_predict_proba` - a generic
+  variational GP binary classifier. It is trained on **reachability** labels here (a target
+  is reachable by some realizable mixture) and reused for **validity** labels in the Step-8
+  cEI (a fluid has a feasible operating point). See :mod:`orc_bo.pipelines.twostage` for the
+  reachability / validity / constraint-feasibility glossary.
 * :func:`greedy_maximin` - maximin space-filling selection.
 """
 from __future__ import annotations
@@ -135,7 +138,12 @@ def fit_target_gp(x: torch.Tensor, y: torch.Tensor) -> SingleTaskGP:
 
 
 class ApproxGPClassifier(gpytorch.models.ApproximateGP):
-    """Variational sparse GP classifier over the one-hot space (feasibility model)."""
+    """Generic variational sparse GP binary classifier.
+
+    Trained on reachability labels (property-space) in stage 1, or validity labels
+    (operability) in the Step-8 cEI. It models a probability, not a specific notion of
+    "feasibility" — the caller decides what the labels mean.
+    """
 
     def __init__(self, inducing_points: torch.Tensor) -> None:
         variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
@@ -163,7 +171,11 @@ def train_gpc(
     lr: float = 0.1,
     m_inducing: int = 128,
 ) -> Tuple[ApproxGPClassifier, gpytorch.likelihoods.BernoulliLikelihood]:
-    """Train the variational GP classifier on binary feasibility labels."""
+    """Train the variational GP binary classifier on ``y_cls`` labels.
+
+    Labels are caller-defined: reachability (target reached) in stage 1, or validity
+    (feasible operating point exists) in the Step-8 cEI.
+    """
     y_flat = y_cls.reshape(-1)
     n_inducing = min(m_inducing, max(32, x_cls.shape[0] // 2))
     inducing = SobolEngine(dimension=x_cls.shape[-1], scramble=True, seed=base_seed()).draw(
@@ -196,7 +208,7 @@ def gpc_predict_proba(
     likelihood: gpytorch.likelihoods.BernoulliLikelihood,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    """Return the predicted feasibility probability for each row of ``x``."""
+    """Return the predicted class probability for each row of ``x`` (reachability or validity)."""
     with gpytorch.settings.fast_pred_var():
         return likelihood(model(x)).mean
 
@@ -287,7 +299,8 @@ def run_targeting(
             acqf = qLogExpectedImprovement(model=model_k, best_f=yk.max(), sampler=sampler)
             x_cand, _ = optimize_acqf(
                 acq_function=acqf, bounds=bounds, q=1,
-                num_restarts=min(10, 2 * t_dim), raw_samples=config.bo.raw_samples,
+                num_restarts=min(config.bo.num_restarts, 2 * t_dim),
+                raw_samples=config.bo.raw_samples,
                 options={"batch_limit": 5, "maxiter": 200},
             )
             selection = snap_to_mixture(

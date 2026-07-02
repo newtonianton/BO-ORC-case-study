@@ -138,7 +138,7 @@ def run_onestage(
             evaluate_and_record(writer, "INIT", order, cand)
 
         if not y_train_vals:
-            raise RuntimeError("No valid initial candidates were realized")
+            raise RuntimeError("No initial candidates could be realized")
 
         x_train = torch.stack(x_train_rows, dim=0)
         y_train = torch.tensor(y_train_vals, **TKWARGS).reshape(-1, 1)
@@ -152,7 +152,8 @@ def run_onestage(
             acqf = qLogExpectedImprovement(model=gp, best_f=y_train.max(), sampler=sampler)
             x_cand, _ = optimize_acqf(
                 acq_function=acqf, bounds=bounds, q=1,
-                num_restarts=min(10, 2 * t_dim), raw_samples=config.bo.raw_samples,
+                num_restarts=min(config.bo.num_restarts, 2 * t_dim),
+                raw_samples=config.bo.raw_samples,
                 options={"batch_limit": 5, "maxiter": 200},
             )
             x_next = x_cand.squeeze(0)

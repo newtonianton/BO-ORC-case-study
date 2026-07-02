@@ -73,7 +73,9 @@ def realize_candidate(
     onehot: torch.Tensor,
     config: AppConfig,
 ) -> Optional[Candidate]:
-    """Turn a snapped selection into a concrete :class:`Candidate`, or ``None`` if invalid.
+    """Turn a snapped selection into a concrete :class:`Candidate`, or ``None`` if it cannot
+    be realized (critical properties unavailable). This is about realizability, not the
+    reachability/validity notions used in the two-stage pipeline.
 
     Pure-fluid critical properties and triple pressures are evaluated with the HEOS
     backend (equation-of-state pure properties that are available on any machine); mixture

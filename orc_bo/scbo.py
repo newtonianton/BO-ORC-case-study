@@ -8,6 +8,13 @@ constraints. It uses a single-trust-region TuRBO loop with constrained Thompson 
 The public entry points are :func:`optimize_operating_conditions` and the retry wrapper
 :func:`optimize_operating_conditions_robust`, both returning
 ``(eta, p_evap_bar, p_cond_bar)``.
+
+Terminology: "feasible" in this module always means **constraint feasibility of an operating
+point** - a specific ``(p_evap, p_cond)`` satisfies the pressure-ordering and pinch
+constraints. This is distinct from the pipeline-level notions of *reachability* (property
+space) and *validity* (whether any feasible operating point exists at all); a fluid is
+*valid* exactly when this optimizer returns a constraint-feasible point (positive efficiency).
+See :mod:`orc_bo.pipelines.twostage` for the full glossary.
 """
 from __future__ import annotations
 
@@ -81,7 +88,8 @@ def _update_trust_region(state: ScboState) -> ScboState:
 
 
 def best_feasible_index(y: Tensor, c: Tensor) -> Tensor:
-    """Index of the best point: max objective among feasible, else least-infeasible."""
+    """Index of the best point: max objective among constraint-feasible operating points
+    (all constraints ``<= 0``), else the least-violating point."""
     feasible = (c <= 0).all(dim=-1)
     if feasible.any():
         scored = y.clone()
@@ -241,14 +249,21 @@ def optimize_operating_conditions_robust(
     ptriple: float,
     simulator: ORCSimulator,
     bo: BOConfig | None = None,
-    max_retries: int = 2,
+    max_retries: int | None = None,
 ) -> OperatingPoint:
     """Retry :func:`optimize_operating_conditions` with fresh seeds until feasible.
 
     Handles cases where an unlucky initialization fails to find a feasible operating
     point. Returns the first result with positive efficiency, or the penalty if all
     attempts are exhausted.
+
+    ``max_retries`` defaults to ``bo.scbo_max_retries``; pass an explicit value to
+    override the configured number of attempts.
     """
+    bo = bo or BOConfig()
+    if max_retries is None:
+        max_retries = bo.scbo_max_retries
+
     for attempt in range(max_retries):
         try:
             eta, p_evap, p_cond = optimize_operating_conditions(
@@ -262,6 +277,6 @@ def optimize_operating_conditions_robust(
         except Exception as exc:  # noqa: BLE001 - SCBO/GP failures are retried
             logger.warning("SCBO attempt %d raised %s; retrying", attempt + 1, exc)
 
-    logger.warning("SCBO exhausted %d attempts without a feasible point", max_retries)
+    logger.warning("SCBO exhausted %d attempts without a valid point", max_retries)
     penalty = (simulator.orc.infeasible_penalty if simulator else -0.05)
     return penalty, -1.0, -1.0

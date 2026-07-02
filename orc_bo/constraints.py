@@ -3,12 +3,15 @@
 Two layers live here:
 
 * :func:`orc_constraints` - the inequality constraints the SCBO inner loop enforces on a
-  simulated operating point (pressure ordering and the two pinch margins). The convention
-  is "feasible when ``<= 0``".
+  simulated operating point (pressure ordering and the two pinch margins). This is
+  **constraint feasibility of an operating point** (convention: feasible when ``<= 0``) - a
+  fluid is *valid* iff at least one operating point is constraint-feasible.
 * :class:`MixtureConstraintManager` - optional pre-screening of candidate fluids/mixtures
   against composition bounds, immiscible pairs, property ranges, and environmental limits
-  (GWP/ODP) and cost. This is the scaffolding for multi-criteria (e.g. efficiency-vs-GWP)
-  selection; it is not required by the core pipeline.
+  (GWP/ODP) and cost. Its ``is_valid`` result means "**admissible** under these screening
+  constraints" - a separate notion from ORC *validity* (operability) and from *reachability*
+  (see :mod:`orc_bo.pipelines.twostage`). Scaffolding for multi-criteria (e.g.
+  efficiency-vs-GWP) selection; not required by the core pipeline.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ logger = get_logger(__name__)
 def orc_constraints(
     result: SimulationResult, p_evap_bar: float, p_cond_bar: float
 ) -> Tuple[float, float, float]:
-    """Return the ORC inequality constraints; each is feasible when ``<= 0``.
+    """Return the ORC operating-point inequality constraints; each is feasible when ``<= 0``.
 
     Parameters
     ----------
@@ -218,7 +221,12 @@ class MixtureConstraintManager:
         tc: Optional[float] = None,
         pc: Optional[float] = None,
     ) -> Tuple[bool, List[str]]:
-        """Run all configured constraints against a candidate.
+        """Run all configured screening constraints against a candidate.
+
+        Here ``is_valid`` means **admissible under the configured screening constraints**
+        (composition, miscibility, property ranges, GWP/ODP/cost) - this is distinct from
+        ORC *validity* (operability) and from *reachability*; see
+        :mod:`orc_bo.pipelines.twostage` for the glossary.
 
         Parameters
         ----------
@@ -234,8 +242,8 @@ class MixtureConstraintManager:
         Returns
         -------
         tuple
-            ``(is_valid, violations)`` where ``violations`` is a list of human-readable
-            constraint-failure descriptions (empty when valid).
+            ``(is_admissible, violations)`` where ``violations`` is a list of human-readable
+            constraint-failure descriptions (empty when admissible).
         """
         self.total_checks += 1
         violations: List[str] = []
