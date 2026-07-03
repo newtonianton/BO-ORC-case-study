@@ -85,11 +85,34 @@ def _earliest_success_ids(labels: torch.Tensor, k: int) -> List[int]:
     return ids[:k]
 
 
+def _sample_band(
+    n: int,
+    tc_band: tuple[float, float],
+    pc_bounds: tuple[float, float],
+    *,
+    lhs: bool = False,
+    seed: int = 0,
+) -> torch.Tensor:
+    """Sample ``n`` property targets as real ``(Tc, Pc)`` within the operable band.
+
+    ``Tc`` is drawn from ``tc_band`` and ``Pc`` from ``pc_bounds`` (the observed pressure
+    range). Latin-hypercube stratification (``lhs=True``) is used for the few initial
+    targets; plain uniform sampling for the many GPC-refill candidates.
+    """
+    if lhs:
+        u = torch.tensor(qmc.LatinHypercube(d=2, seed=seed).random(n=n), **TKWARGS)
+    else:
+        u = torch.rand(n, 2, **TKWARGS)
+    tc = tc_band[0] + u[:, 0] * (tc_band[1] - tc_band[0])
+    pc = pc_bounds[0] + u[:, 1] * (pc_bounds[1] - pc_bounds[0])
+    return torch.stack([tc, pc], dim=1)
+
+
 def run_twostage(
     csv_path: Path,
     mode: str = "mixture",
     n_init: int = 5,
-    scbo_budget: int = 3,
+    scbo_budget: Optional[int] = None,
     outdir: Path = Path("runs/twostage"),
     config: Optional[AppConfig] = None,
 ) -> TwoStageResult:
@@ -104,7 +127,9 @@ def run_twostage(
     n_init:
         Number of Latin-hypercube initial mixtures.
     scbo_budget:
-        Step-8 cEI system budget (number of exploitation proposals).
+        Step-8 cEI budget (number of exploitation proposals). This is the ``--scbo-budget``
+        CLI flag; when ``None`` it falls back to ``config.twostage.system_budget``. Note the
+        total number of SCBO evaluations is roughly ``required_valid_init`` (Step 7) plus this.
     outdir:
         Output directory; a ``seed_XXX`` subdirectory is created within it.
     config:
@@ -117,6 +142,8 @@ def run_twostage(
     """
     config = config or AppConfig()
     ts = config.twostage
+    if scbo_budget is None:
+        scbo_budget = ts.system_budget
     threshold = config.mixture.composition_threshold
     seed = base_seed()
     subdir = Path(outdir) / f"seed_{seed:03d}"
@@ -125,7 +152,13 @@ def run_twostage(
     t_dim = len(fluids)
     onehot = torch.eye(t_dim, **TKWARGS)
     simulator = ORCSimulator(orc=config.orc, backend=config.thermo.backend)
-    logger.info("Two-stage: %d fluids, n_init=%d, seed=%d", t_dim, n_init, seed)
+    logger.info(
+        "Two-stage: %d fluids | n_init=%d n_targets=%d required_valid_init=%d radius_norm=%.3f "
+        "gpc_max_rounds=%d scbo_budget=%d failure_allowance=%d scbo_max_retries=%d | backend=%s seed=%d",
+        t_dim, n_init, ts.n_property_targets, ts.required_valid_init, ts.radius_norm,
+        ts.gpc_max_rounds, scbo_budget, ts.failure_allowance, config.bo.scbo_max_retries,
+        config.thermo.backend, seed,
+    )
 
     evaluated_mixtures: Set[MixtureKey] = set()
     metadata: List[MixtureKey] = []
@@ -144,11 +177,22 @@ def run_twostage(
     normalizer = PropNormalizer(PROP_NAMES)
     normalizer.fit_from_real_points(p_real)
 
-    # Initial property targets via LHS in normalized property space.
-    targets_norm = torch.tensor(
-        qmc.LatinHypercube(d=len(PROP_NAMES), seed=seed).random(n=ts.n_property_targets), **TKWARGS
-    )
-    asked_targets_real = normalizer.to_real(targets_norm)
+    # Operable Tc band: restrict property targets to fluids that can actually run the cycle,
+    # rather than the full observed box (which includes inoperable high-Tc fluids). Defaults
+    # derive from the source temperature; clamped to the observed Tc range. Pc spans observed.
+    source_k = config.orc.t_in_source_c + 273.15
+    obs_tc_lo, obs_tc_hi = float(normalizer.bounds["lower"][0]), float(normalizer.bounds["upper"][0])
+    tc_lo = max(ts.tc_min_k if ts.tc_min_k is not None else source_k, obs_tc_lo)
+    tc_hi = min(ts.tc_max_k if ts.tc_max_k is not None else source_k + 200.0, obs_tc_hi)
+    if tc_hi <= tc_lo:
+        logger.warning("Operable Tc band collapsed; falling back to full observed Tc range")
+        tc_lo, tc_hi = obs_tc_lo, obs_tc_hi
+    tc_band = (tc_lo, tc_hi)
+    pc_bounds = (float(normalizer.bounds["lower"][1]), float(normalizer.bounds["upper"][1]))
+    logger.info("Operable Tc band for targets: [%.1f, %.1f] K (source %.1f K)", tc_lo, tc_hi, source_k)
+
+    # Initial property targets: LHS within the operable (Tc, Pc) box.
+    asked_targets_real = _sample_band(ts.n_property_targets, tc_band, pc_bounds, lhs=True, seed=seed)
 
     metadata, p_real, evaluated_mixtures, _ = run_targeting(
         asked_targets_real, metadata, p_real, normalizer, onehot, evaluated_mixtures,
@@ -164,7 +208,8 @@ def run_twostage(
     # labels/num_valid track REACHABILITY (a target was reached), not validity (operability).
     labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
     num_reached = int(sum(flags))
-    logger.info("[Step 6] initially reached targets: %d/%d", num_reached, ts.required_valid_init)
+    logger.info("[Step 6] initially reached %d of %d targets (need >= %d to skip space-filling)",
+                num_reached, len(asked_targets_real), ts.required_valid_init)
 
     gpc_round = 0
     while num_reached < ts.required_valid_init and gpc_round < ts.gpc_max_rounds:
@@ -172,7 +217,10 @@ def run_twostage(
         x_targets = normalizer.to_norm(asked_targets_real, clip=False)
         # Reachability GPC: P(a target here is reachable by some realizable mixture).
         model, likelihood = train_gpc(x_targets, labels, steps=ts.gpc_steps, lr=ts.gpc_lr)
-        candidates = torch.rand(ts.gpc_candidates, len(PROP_NAMES), **TKWARGS)
+        # Refill candidates are drawn only from the operable Tc band, then normalized for the GPC.
+        candidates = normalizer.to_norm(
+            _sample_band(ts.gpc_candidates, tc_band, pc_bounds), clip=False
+        )
         proba = gpc_predict_proba(model, likelihood, candidates)
         reachable = candidates[proba >= ts.gpc_feasibility_threshold]
         if reachable.numel() == 0:
@@ -195,8 +243,8 @@ def run_twostage(
         )
         labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
         num_reached = int(sum(flags))
-        logger.info("[Step 6] reached targets after round %d: %d/%d",
-                    gpc_round, num_reached, ts.required_valid_init)
+        logger.info("[Step 6] after round %d: reached %d of %d targets (need >= %d)",
+                    gpc_round, num_reached, len(asked_targets_real), ts.required_valid_init)
 
     # ---- Step 7: SCBO on the earliest satisfied targets' realized mixtures ----
     _, success_rows, _ = success_mask(
@@ -222,7 +270,7 @@ def run_twostage(
             )
             order += 1
             n_scbo += 1
-            writer.record("SCBO", order, "mixture", cand, eta, p_evap, p_cond)
+            writer.record("STEP7", order, "mixture", cand, eta, p_evap, p_cond)
             scbo_props.append([cand.tc, cand.pc])
             scbo_eta.append(eta)
             logger.info("[Step 7] %s: eta=%.5f", cand.name, eta)
@@ -233,7 +281,7 @@ def run_twostage(
         best_eta, best_name, order = _exploitation_loop(
             writer, order, fluids, onehot, evaluated_mixtures, normalizer,
             asked_targets_real, labels, simulator, config, best_eta, best_name,
-            scbo_props, scbo_eta,
+            scbo_props, scbo_eta, system_budget=scbo_budget,
         )
 
     result = TwoStageResult(
@@ -245,6 +293,7 @@ def run_twostage(
     )
     logger.info("Two-stage complete: best %s eta=%.5f -> %s",
                 result.best_name, result.best_eta, subdir)
+    logger.info("Backend coverage: %s", simulator.backend_failure_report())
     return result
 
 
@@ -263,6 +312,7 @@ def _exploitation_loop(
     best_name: str,
     scbo_props: List[List[float]],
     scbo_eta: List[float],
+    system_budget: int,
     n_screen: int = 64,
 ) -> tuple[float, str, int]:
     """Step-8 probability-weighted cEI exploitation loop.
@@ -288,7 +338,7 @@ def _exploitation_loop(
     x_targets = normalizer.to_norm(asked_targets_real, clip=False)
     prop_model, prop_lik = train_gpc(x_targets, labels, steps=ts.gpc_steps, lr=ts.gpc_lr)
 
-    budget = ts.system_budget
+    budget = system_budget
     failures = 0
     while budget > 0 and failures < ts.failure_allowance:
         # (Re)train the validity GPC (P_sys) and efficiency GP from accumulated outcomes.
@@ -296,8 +346,9 @@ def _exploitation_loop(
         if scbo_props:
             props_t = normalizer.to_norm(torch.tensor(scbo_props, **TKWARGS), clip=True)
             valid = [e > 0 for e in scbo_eta]  # validity: a feasible operating point exists
-            # P_sys (validity) needs both valid and invalid examples to classify.
-            if getattr(ts, "use_orc_feasibility", True) and any(valid) and not all(valid):
+            # P_sys (validity) is always applied when trainable — it needs both a valid and
+            # an invalid example present (a one-class classifier is undefined).
+            if any(valid) and not all(valid):
                 y_valid = torch.tensor([[1.0 if v else 0.0] for v in valid], **TKWARGS)
                 orc_gpc, orc_lik = train_gpc(props_t, y_valid, steps=ts.gpc_steps, lr=ts.gpc_lr)
             # Efficiency GP for the EI base — VALID outcomes only (eta > 0). The infeasible

@@ -80,7 +80,7 @@ class BOConfig:
     num_restarts: int = 10
     raw_samples: int = 512
     # Whole-SCBO retry attempts when no feasible operating point is found.
-    scbo_max_retries: int = 8
+    scbo_max_retries: int = 4
     # GP fitting noise schedule.
     gp_noise: float = 1e-5
     gp_max_noise: float = 1.0
@@ -90,22 +90,26 @@ class BOConfig:
 class TwoStageConfig:
     """Hyperparameters specific to the two-stage property-targeting pipeline."""
 
-    n_property_targets: int = 8
+    n_property_targets: int = 20
     # required_valid_init counts REACHED targets (reachability), not validity/operability.
-    required_valid_init: int = 3
-    target_budget: int = 2
+    required_valid_init: int = 8
+    target_budget: int = 3
     radius_norm: float = 0.15
     # Probability threshold for the REACHABILITY GPC (a property region is reachable).
     gpc_feasibility_threshold: float = 0.5
     gpc_candidates: int = 20_000
-    gpc_max_rounds: int = 8
+    gpc_max_rounds: int = 4
     gpc_steps: int = 200
     gpc_lr: float = 0.1
     # Step-8 cEI exploitation loop.
     system_budget: int = 3
     failure_allowance: int = 3
-    # Multiply the validity GPC (P_sys) into the Step-8 cEI score; off = ablation.
-    use_orc_feasibility: bool = True
+    # Operable critical-temperature band [K] for property targets. None -> derived from the
+    # ORC source temperature (tc_min = source, tc_max = source + 200 K). Targets (Steps 3 & 6)
+    # are sampled only within this band, concentrating the search on fluids that can actually
+    # run the cycle instead of e.g. 700 K siloxanes. The band is clamped to the observed range.
+    tc_min_k: Optional[float] = None
+    tc_max_k: Optional[float] = None
 
 
 @dataclass(frozen=True)

@@ -264,6 +264,13 @@ def optimize_operating_conditions_robust(
     if max_retries is None:
         max_retries = bo.scbo_max_retries
 
+    # Skip fluids the backend cannot even build (e.g. a mixture pair with no interaction
+    # parameters): this avoids wasting every retry and records it as a backend failure
+    # rather than a merely-infeasible fluid.
+    if not simulator.can_evaluate(wf):
+        logger.debug("Backend cannot build %s; skipping SCBO", wf)
+        return simulator.orc.infeasible_penalty, -1.0, -1.0
+
     for attempt in range(max_retries):
         try:
             eta, p_evap, p_cond = optimize_operating_conditions(

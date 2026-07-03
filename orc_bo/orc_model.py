@@ -54,11 +54,38 @@ class ORCSimulator:
         o = self.orc
         self._hin_src = thermo.enthalpy_tp("water", o.t_in_source_c + 273.15, o.source_pressure_pa)
         self._hout_src = thermo.enthalpy_tp("water", o.t_out_source_c + 273.15, o.source_pressure_pa)
+        # Backend-coverage instrumentation (per fluid handed to can_evaluate).
+        self.n_evaluations = 0
+        self.n_backend_failures = 0
 
     @property
     def _penalty(self) -> SimulationResult:
         p = self.orc.infeasible_pinch
         return SimulationResult(self.orc.infeasible_penalty, p, p)
+
+    def can_evaluate(self, wf: str) -> bool:
+        """Return whether the backend can build this working fluid's model.
+
+        A mixture equation of state exists only for pairs the backend has parameters for;
+        unmatched pairs (common on HEOS) fail at ``AbstractState`` construction, *before* any
+        flash. Each call and each failure are counted (see :meth:`backend_failure_report`),
+        so callers can skip fluids the backend cannot evaluate instead of wasting SCBO
+        retries and mislabelling a backend gap as a merely infeasible fluid.
+        """
+        self.n_evaluations += 1
+        try:
+            thermo.make_abstract_state(wf, self.backend)
+            return True
+        except thermo.ThermoError as exc:
+            self.n_backend_failures += 1
+            logger.debug("Backend cannot build %s: %s", wf, str(exc)[:80])
+            return False
+
+    def backend_failure_report(self) -> str:
+        """One-line summary of how many fluids the backend could not evaluate."""
+        n, f = self.n_evaluations, self.n_backend_failures
+        pct = (100.0 * f / n) if n else 0.0
+        return f"backend could not evaluate {f}/{n} fluids ({pct:.0f}%)"
 
     def simulate(self, wf: str, p_evap_bar: float, p_cond_bar: float) -> SimulationResult:
         """Simulate one ORC operating point.

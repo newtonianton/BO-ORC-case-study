@@ -178,4 +178,5 @@ def run_onestage(
     )
     logger.info("One-stage complete: best %s eta=%.5f (%d evals) -> %s",
                 result.best_name, result.best_eta, result.n_evaluations, subdir)
+    logger.info("Backend coverage: %s", simulator.backend_failure_report())
     return result

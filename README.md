@@ -126,9 +126,46 @@ PYTHONHASHSEED=0 python -m orc_bo.cli twostage \
     --outdir runs/mixture_twostage
 ```
 
-The two-stage pipeline first searches `(Tc, Pc)` property space for mixtures near desirable
-targets (with a GP classifier proposing space-filling targets), then runs SCBO on the
-satisfied targets, followed by a bounded cEI exploitation loop.
+#### Two-stage pipeline steps
+
+The two-stage pipeline runs an 8-step procedure. The numbering is inherited from the
+original algorithm's flowchart; in the current code Steps 1–5 happen up front as one
+setup/targeting block and only **Steps 6–8 are logged** (`[Step 6]`, `[Step 7]`, `[Step 8]`).
+It uses three precise notions of "feasibility" (see the `twostage.py` glossary):
+**reachability** (a property target is near a realizable fluid), **validity** (a fluid has a
+constraint-feasible operating point), and **constraint feasibility** (a specific
+`(p_evap, p_cond)` satisfies the pressure/pinch constraints).
+
+**Stage 1 — Targeting (Steps 1–6):** find realizable mixtures near desirable `(Tc, Pc)` regions.
+
+1. **Initial sampling** — draw `n_init` Latin-hypercube points in one-hot fluid space and
+   snap each to a binary mixture.
+2. **Property evaluation** — compute `(Tc, Pc)` for each initial mixture (REFPROP, or the
+   mixing-rule fallback) and fit the property normalizer.
+3. **Initial targets** — draw `n_property_targets` Latin-hypercube points as goals, sampled
+   only within the **operable `Tc` band** `[tc_min_k, tc_max_k]` (default: source temperature
+   → source + 200 K, clamped to the observed range). This keeps targets on fluids that can
+   actually run the cycle instead of e.g. 700 K siloxanes.
+4. **Targeting** — for each unmet target, a GP over one-hot space proposes a mixture that
+   moves toward it (qLogEI); realize it and record its properties (`run_targeting`), up to
+   `target_budget` tries per target.
+5. **Reachability labelling** — `success_mask` marks which targets have a realized fluid
+   within `radius_norm` (i.e. *reached*).
+6. **GPC space-filling** *(logged)* — while fewer than `required_valid_init` targets are
+   reached: train the **reachability** GPC, propose new targets (also drawn from the operable
+   `Tc` band) in regions it predicts reachable (`greedy_maximin`), and re-run targeting. Stops
+   when enough targets are reached or `gpc_max_rounds` is hit.
+
+**Stage 2 — Realization & exploitation (Steps 7–8):** turn reached mixtures into operable designs.
+
+7. **SCBO realization** *(logged)* — for each reached mixture, SCBO optimizes the operating
+   pressures `(p_evap, p_cond)` subject to the constraints, returning efficiency (or the
+   infeasible penalty). This is where **validity** is actually tested.
+8. **cEI exploitation** *(logged)* — a bounded loop proposing further mixtures, scored by
+   **EI × reachability (`P_prop`) × validity (`P_sys`)**, SCBO-ing each and feeding the
+   outcome back to retrain the validity GPC and the efficiency GP. Runs `--scbo-budget`
+   proposals (falling back to `[twostage] system_budget`), stopping early after
+   `failure_allowance` consecutive invalid (no feasible operating point) evaluations.
 
 ### Benchmarks
 
