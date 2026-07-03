@@ -16,10 +16,13 @@ near desirable property targets, then optimizes operating conditions (stage 2, v
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+
+if TYPE_CHECKING:  # avoid a runtime import cycle; used only for type hints
+    from .pipelines.common import Fluid
 
 import gpytorch
 from botorch.acquisition import qLogExpectedImprovement
@@ -245,7 +248,7 @@ def run_targeting(
     normalizer: PropNormalizer,
     onehot: torch.Tensor,
     evaluated_mixtures: set[MixtureKey],
-    fluids: List[str],
+    fluids: List["Fluid"],
     config: AppConfig,
     radius: float = 0.05,
     budget_per_target: int = 2,
@@ -318,11 +321,13 @@ def run_targeting(
 
         for k, (j1, j2, x1) in proposed.items():
             evaluated_mixtures.add((j1, j2, x1))
-            fluid1, fluid2 = fluids[j1], fluids[j2]
-            tc, pc = thermo.critical_properties(fluid1, fluid2, x1, config.thermo)
+            f1, f2 = fluids[j1], fluids[j2]
+            tc, pc = thermo.critical_properties(
+                f1.name, f2.name, x1, config.thermo, refprop1=f1.refprop, refprop2=f2.refprop
+            )
             if not np.isfinite(tc) or not np.isfinite(pc):
                 logger.warning("Targeting: invalid properties for %s",
-                               format_mixture_name(fluid1, fluid2, x1))
+                               format_mixture_name(f1.name, f2.name, x1))
                 continue
             metadata.append((j1, j2, x1))
             p_real = torch.cat([p_real, torch.tensor([[tc, pc]], **TKWARGS)], dim=0)

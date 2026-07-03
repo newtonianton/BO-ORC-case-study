@@ -14,6 +14,7 @@ Key behaviors
 """
 from __future__ import annotations
 
+import os
 from collections import Counter
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -25,6 +26,29 @@ from .config import ThermoBackend, ThermoConfig
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
+
+# Default REFPROP install directory on Windows (contains REFPRP64.dll and the fluid files).
+_DEFAULT_REFPROP_PATH = r"C:\Program Files (x86)\REFPROP"
+
+
+def _configure_refprop() -> None:
+    """Point CoolProp at the REFPROP installation so its REFPROP backend can load.
+
+    CoolProp needs the directory containing ``REFPRP64.dll`` and the fluid files. It is read
+    from the ``ORC_BO_REFPROP_PATH`` environment variable, defaulting to the standard Windows
+    location. This must run before the first REFPROP call, so it runs at import time; it is a
+    no-op when the directory is absent (machines without REFPROP), leaving pure-fluid HEOS
+    work unaffected.
+    """
+    path = os.environ.get("ORC_BO_REFPROP_PATH", _DEFAULT_REFPROP_PATH)
+    if path and os.path.isdir(path):
+        try:
+            CP.set_config_string(CP.ALTERNATIVE_REFPROP_PATH, path)
+        except (ValueError, RuntimeError):  # pragma: no cover - best-effort config
+            logger.debug("Could not set REFPROP path to %s", path)
+
+
+_configure_refprop()
 
 # CoolProp raises ValueError for most failed property evaluations; some backends raise
 # RuntimeError. These are the exceptions we treat as "property unavailable".
@@ -168,6 +192,8 @@ def critical_properties(
     fluid2: Optional[str],
     x1: float,
     config: Optional[ThermoConfig] = None,
+    refprop1: Optional[str] = None,
+    refprop2: Optional[str] = None,
 ) -> Tuple[float, float]:
     """Return ``(Tcrit, Pcrit)`` for a pure fluid or binary mixture.
 
@@ -179,13 +205,18 @@ def critical_properties(
     Parameters
     ----------
     fluid1:
-        First (or only) component name.
+        First (or only) component's display/HEOS name.
     fluid2:
-        Second component name, or ``None`` for a pure fluid.
+        Second component's display/HEOS name, or ``None`` for a pure fluid.
     x1:
         Mole fraction of ``fluid1`` (ignored for pure fluids).
     config:
         Thermo configuration; defaults to :class:`ThermoConfig` defaults.
+    refprop1, refprop2:
+        Optional REFPROP names for the two components. REFPROP and HEOS do not share a
+        name space, so the REFPROP equation-of-state path uses these while the mixing-rule
+        fallback keeps using the HEOS names ``fluid1``/``fluid2``. Default to
+        ``fluid1``/``fluid2`` when omitted (backward compatible).
 
     Returns
     -------
@@ -193,25 +224,29 @@ def critical_properties(
         ``(Tcrit [K], Pcrit [Pa])``.
     """
     config = config or ThermoConfig()
+    rp1 = refprop1 or fluid1
+    rp2 = refprop2 or fluid2
 
     if fluid2 is None:
-        return pure_critical_properties(fluid1, config.backend)
+        return pure_critical_properties(rp1 if config.backend == "REFPROP" else fluid1, config.backend)
 
-    # Mixture: try the equation of state first.
+    # Mixture: try the equation of state first. Use the AbstractState critical-point API
+    # (not PropsSI("Tcrit", ...), which routes through the single-fluid Props1SI path and
+    # cannot parse mixture strings, spuriously failing for every mixture).
     if config.backend == "REFPROP" and refprop_available():
         try:
-            wf = make_refprop_mixture_string(fluid1, fluid2, x1)
-            return CP.PropsSI("Tcrit", wf), CP.PropsSI("Pcrit", wf)
+            state = make_abstract_state(make_refprop_mixture_string(rp1, rp2, x1), "REFPROP")
+            return state.T_critical(), state.p_critical()
         except ThermoError as exc:
             if not config.allow_mixing_rule_fallback:
                 raise
+            # Reaching here is a genuine REFPROP failure (usually an unrecognized fluid name,
+            # e.g. D4/R40); the mixing-rule fallback below handles it. Logged at debug to avoid
+            # flooding the console for datasets with a few non-REFPROP names.
             _FALLBACK_COUNTS["refprop_mixture_failed"] += 1
-            logger.warning(
-                "REFPROP mixture Tcrit/Pcrit failed for %s/%s x1=%.4f (%s); using mixing rules",
-                fluid1,
-                fluid2,
-                x1,
-                exc,
+            logger.debug(
+                "REFPROP mixture critical point failed for %s/%s x1=%.4f (%s); using mixing rules",
+                fluid1, fluid2, x1, exc,
             )
     elif not config.allow_mixing_rule_fallback:
         raise RuntimeError(

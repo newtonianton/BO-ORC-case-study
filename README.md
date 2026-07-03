@@ -78,6 +78,20 @@ venv/Scripts/python -m pip install -r requirements.txt        # Windows
 
 Select the backend with `--backend {HEOS,REFPROP}` or the `ORC_BO_BACKEND` env variable.
 
+### Dataset format
+
+`data/Joback_Refrigerants.csv` carries two names per fluid because HEOS and REFPROP do not
+share a naming convention:
+
+* `fluid` — the display / CoolProp-**HEOS** name (e.g. `Dichloroethane`, `n-Butane`). Used
+  for labels, pure-fluid critical properties, and the mixing-rule fallback.
+* `REFPROP_STANDARD` — the **REFPROP** name (e.g. `R150`, `BUTANE`). Used when building the
+  mixture string handed to REFPROP. If this column is blank for a row, the display name is
+  reused (CoolProp resolves many display names to REFPROP fluids on its own).
+
+Only fluids REFPROP can model as mixture components belong here; pseudo-pure fluids such as
+SES36 (HEOS-only) are excluded so mixtures stay REFPROP-consistent.
+
 ---
 
 ## Usage

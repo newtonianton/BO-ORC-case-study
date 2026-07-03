@@ -23,6 +23,26 @@ logger = get_logger(__name__)
 
 TKWARGS = {"device": "cpu", "dtype": torch.double}
 
+
+@dataclass(frozen=True)
+class Fluid:
+    """A dataset fluid carrying both of its backend-specific names.
+
+    ``name`` is the human-readable / CoolProp-HEOS name (column ``fluid`` of the CSV);
+    HEOS accepts all of these. ``refprop`` is the REFPROP name (column ``REFPROP_STANDARD``);
+    REFPROP mixture strings must use this. The two backends do not share a name space
+    (e.g. Dichloroethane is ``R150`` in REFPROP; ``n-Butane`` is ``BUTANE``), so every
+    thermo call uses the name matching the backend it targets.
+    """
+
+    name: str
+    refprop: str
+
+
+def _backend_name(fluid: Fluid, backend: ThermoBackend) -> str:
+    """The fluid name to feed a working-fluid string for the given backend."""
+    return fluid.refprop if backend == "REFPROP" else fluid.name
+
 RESULT_FIELDS = [
     "phase", "order", "mixture", "mode", "comp1", "comp2", "x1",
     "Tc_K", "Pc_Pa", "eta", "p_evap_bar", "p_cond_bar",
@@ -46,9 +66,15 @@ class Candidate:
     x_onehot: torch.Tensor
 
 
-def load_fluids(csv_path: Path) -> List[str]:
-    """Load the ordered, de-duplicated list of fluid names from the dataset CSV."""
-    fluids: List[str] = []
+def load_fluids(csv_path: Path) -> List[Fluid]:
+    """Load the ordered, de-duplicated fluids from the dataset CSV.
+
+    Reads both the display/HEOS name (column ``fluid``) and the REFPROP name (column
+    ``REFPROP_STANDARD``). If the REFPROP column is absent or blank for a row, the display
+    name is reused as a best-effort fallback (CoolProp resolves most display names to
+    REFPROP fluids on its own).
+    """
+    fluids: List[Fluid] = []
     seen = set()
     with open(csv_path, "r", encoding="utf-8") as handle:
         reader = csv.reader(handle)
@@ -56,9 +82,10 @@ def load_fluids(csv_path: Path) -> List[str]:
         for row in reader:
             if row and row[0]:
                 name = row[0].strip()
+                refprop = row[1].strip() if len(row) > 1 and row[1].strip() else name
                 if name and name not in seen:
                     seen.add(name)
-                    fluids.append(name)
+                    fluids.append(Fluid(name=name, refprop=refprop))
     if not fluids:
         raise RuntimeError(f"No fluid names found in {csv_path}")
     return fluids
@@ -69,7 +96,7 @@ def realize_candidate(
     j1: int,
     j2: Optional[int],
     x1: float,
-    fluids: List[str],
+    fluids: List[Fluid],
     onehot: torch.Tensor,
     config: AppConfig,
 ) -> Optional[Candidate]:
@@ -78,37 +105,48 @@ def realize_candidate(
     reachability/validity notions used in the two-stage pipeline.
 
     Pure-fluid critical properties and triple pressures are evaluated with the HEOS
-    backend (equation-of-state pure properties that are available on any machine); mixture
-    critical properties go through :func:`orc_bo.thermo.critical_properties`, which prefers
-    REFPROP and falls back to mixing rules.
+    backend (equation-of-state pure properties that are available on any machine, and which
+    use the display name); mixture critical properties go through
+    :func:`orc_bo.thermo.critical_properties`, which prefers REFPROP and falls back to mixing
+    rules. The working-fluid string handed to the simulator uses the backend-appropriate name
+    (REFPROP names for the REFPROP backend, display names for HEOS).
     """
-    fluid1 = fluids[j1]
-    fluid2 = fluids[j2] if j2 is not None else None
+    f1 = fluids[j1]
+    f2 = fluids[j2] if j2 is not None else None
+    backend = config.thermo.backend
 
     try:
-        if mode == "pure" or fluid2 is None:
-            tc, pc = thermo.pure_critical_properties(fluid1, "HEOS")
-            ptriple = thermo.triple_pressure(fluid1, "HEOS")
-            wf = fluid1
+        if mode == "pure" or f2 is None:
+            tc, pc = thermo.pure_critical_properties(f1.name, "HEOS")
+            ptriple = thermo.triple_pressure(f1.name, "HEOS")
+            wf = _backend_name(f1, backend)
             x_onehot = onehot[j1].clone()
         else:
-            tc, pc = thermo.critical_properties(fluid1, fluid2, x1, config.thermo)
-            ptriple = min(
-                thermo.triple_pressure(fluid1, "HEOS"),
-                thermo.triple_pressure(fluid2, "HEOS"),
+            tc, pc = thermo.critical_properties(
+                f1.name, f2.name, x1, config.thermo,
+                refprop1=f1.refprop, refprop2=f2.refprop,
             )
-            wf = make_refprop_mixture_string(fluid1, fluid2, x1)
+            ptriple = min(
+                thermo.triple_pressure(f1.name, "HEOS"),
+                thermo.triple_pressure(f2.name, "HEOS"),
+            )
+            wf = make_refprop_mixture_string(
+                _backend_name(f1, backend), _backend_name(f2, backend), x1
+            )
             x_onehot = x1 * onehot[j1] + (1.0 - x1) * onehot[j2]
     except thermo.ThermoError as exc:
-        logger.warning("Property lookup failed for %s/%s x1=%.3f: %s", fluid1, fluid2, x1, exc)
+        logger.warning("Property lookup failed for %s/%s x1=%.3f: %s",
+                       f1.name, f2.name if f2 else None, x1, exc)
         return None
 
     if not np.isfinite(tc) or not np.isfinite(pc):
-        logger.warning("Non-finite properties for %s/%s x1=%.3f", fluid1, fluid2, x1)
+        logger.warning("Non-finite properties for %s/%s x1=%.3f",
+                       f1.name, f2.name if f2 else None, x1)
         return None
 
-    name = format_mixture_name(fluid1, fluid2 if mode != "pure" else None, x1)
-    return Candidate(j1, j2, x1, fluid1, fluid2, name, wf, tc, pc, ptriple, x_onehot)
+    name = format_mixture_name(f1.name, f2.name if mode != "pure" and f2 else None, x1)
+    return Candidate(j1, j2, x1, f1.name, f2.name if f2 else None,
+                     name, wf, tc, pc, ptriple, x_onehot)
 
 
 class RunWriter:

@@ -61,7 +61,7 @@ from ..targeting import (
     train_gpc,
 )
 from .. import thermo
-from .common import Candidate, RunWriter, TKWARGS, load_fluids, realize_candidate
+from .common import Candidate, Fluid, RunWriter, TKWARGS, load_fluids, realize_candidate
 
 logger = get_logger(__name__)
 
@@ -169,7 +169,10 @@ def run_twostage(
     for k in range(lhs.shape[0]):
         j1, j2, x1 = snap_to_mixture(lhs[k], onehot, evaluated_mixtures, composition_threshold=threshold)
         evaluated_mixtures.add((j1, j2, x1))
-        tc, pc = thermo.critical_properties(fluids[j1], fluids[j2], x1, config.thermo)
+        f1, f2 = fluids[j1], fluids[j2]
+        tc, pc = thermo.critical_properties(
+            f1.name, f2.name, x1, config.thermo, refprop1=f1.refprop, refprop2=f2.refprop
+        )
         metadata.append((j1, j2, x1))
         p_rows.append([tc, pc])
     p_real = torch.tensor(p_rows, **TKWARGS)
@@ -300,7 +303,7 @@ def run_twostage(
 def _exploitation_loop(
     writer: RunWriter,
     order: int,
-    fluids: List[str],
+    fluids: List[Fluid],
     onehot: torch.Tensor,
     evaluated_mixtures: Set[MixtureKey],
     normalizer: PropNormalizer,
@@ -392,7 +395,7 @@ def _propose_by_cei(
     orc_lik,
     eff_gp,
     best_eta: float,
-    fluids: List[str],
+    fluids: List[Fluid],
     onehot: torch.Tensor,
     evaluated_mixtures: Set[MixtureKey],
     normalizer: PropNormalizer,

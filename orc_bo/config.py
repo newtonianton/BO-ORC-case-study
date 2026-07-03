@@ -6,8 +6,10 @@ thermodynamic backend) live here as frozen dataclasses. A single :class:`AppConf
 bundles them and can be loaded from a TOML file and/or environment variables.
 
 Environment overrides (applied on top of file/defaults):
-    ORC_BO_BACKEND      -> thermo.backend ("REFPROP" or "HEOS")
-    ORC_BO_DATA_CSV     -> paths.data_csv
+    ORC_BO_BACKEND       -> thermo.backend ("REFPROP" or "HEOS")
+    ORC_BO_DATA_CSV      -> paths.data_csv
+    ORC_BO_REFPROP_PATH  -> REFPROP install directory (see orc_bo.thermo; default is the
+                            standard Windows location C:\\Program Files (x86)\\REFPROP)
 """
 from __future__ import annotations
 
