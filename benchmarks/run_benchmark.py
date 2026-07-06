@@ -27,7 +27,10 @@ from itertools import product
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from aggregate_results import collect_results, summarize, to_latex, write_csv
+try:  # `python -m benchmarks.run_benchmark` (runs with a package context)
+    from .aggregate_results import collect_results, summarize, to_latex, write_csv
+except ImportError:  # `python benchmarks/run_benchmark.py` (script context: benchmarks/ on sys.path)
+    from aggregate_results import collect_results, summarize, to_latex, write_csv
 
 
 @dataclass(frozen=True)

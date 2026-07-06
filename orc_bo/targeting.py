@@ -35,7 +35,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch.quasirandom import SobolEngine
 
 from .config import AppConfig
-from .geometry import MixtureKey, format_mixture_name, snap_to_mixture
+from .geometry import MixtureKey, format_mixture_name, simplex_row, snap_selection
 from .logging_setup import get_logger
 from .seeding import base_seed
 from . import thermo
@@ -252,13 +252,15 @@ def run_targeting(
     config: AppConfig,
     radius: float = 0.05,
     budget_per_target: int = 2,
+    mode: str = "mixture",
 ) -> Tuple[List[MixtureKey], torch.Tensor, set[MixtureKey], List[dict]]:
-    """Drive mixture proposals toward each property target via GP + qLogEI.
+    """Drive fluid proposals toward each property target via GP + qLogEI.
 
     For every still-unsatisfied target, fit a GP of (negative distance to target) over the
-    one-hot space, propose a new mixture by maximizing qLogEI, snap it, compute its
-    properties, and append it. Returns updated metadata, the property tensor, the evaluated
-    set, and per-target success records. Plotting from the original is intentionally omitted.
+    one-hot space, propose a new selection by maximizing qLogEI, snap it (a pure vertex when
+    ``mode == "pure"``, otherwise a binary mixture edge), compute its properties, and append
+    it. Returns updated metadata, the property tensor, the evaluated set, and per-target
+    success records. Plotting from the original is intentionally omitted.
     """
     if targets_real.numel() == 0:
         normalizer.maybe_expand(p_real)
@@ -281,7 +283,7 @@ def run_targeting(
     bounds = torch.stack([torch.zeros(t_dim, **TKWARGS), torch.ones(t_dim, **TKWARGS)])
 
     def x_rows() -> torch.Tensor:
-        rows = [x1 * onehot[j1] + (1.0 - x1) * onehot[j2] for (j1, j2, x1) in metadata]
+        rows = [simplex_row(onehot, j1, j2, x1) for (j1, j2, x1) in metadata]
         return torch.stack(rows, dim=0)
 
     x_train = x_rows()
@@ -306,8 +308,8 @@ def run_targeting(
                 raw_samples=config.bo.raw_samples,
                 options={"batch_limit": 5, "maxiter": 200},
             )
-            selection = snap_to_mixture(
-                x_cand.squeeze(0), onehot, evaluated_mixtures,
+            selection = snap_selection(
+                mode, x_cand.squeeze(0), onehot, evaluated_mixtures,
                 composition_threshold=config.mixture.composition_threshold,
             )
             if selection not in claimed:
@@ -321,17 +323,19 @@ def run_targeting(
 
         for k, (j1, j2, x1) in proposed.items():
             evaluated_mixtures.add((j1, j2, x1))
-            f1, f2 = fluids[j1], fluids[j2]
+            f1 = fluids[j1]
+            f2 = fluids[j2] if j2 is not None else None
             tc, pc = thermo.critical_properties(
-                f1.name, f2.name, x1, config.thermo, refprop1=f1.refprop, refprop2=f2.refprop
+                f1.name, f2.name if f2 else None, x1, config.thermo,
+                refprop1=f1.refprop, refprop2=f2.refprop if f2 else None,
             )
             if not np.isfinite(tc) or not np.isfinite(pc):
                 logger.warning("Targeting: invalid properties for %s",
-                               format_mixture_name(f1.name, f2.name, x1))
+                               format_mixture_name(f1.name, f2.name if f2 else None, x1))
                 continue
             metadata.append((j1, j2, x1))
             p_real = torch.cat([p_real, torch.tensor([[tc, pc]], **TKWARGS)], dim=0)
-            x_train = torch.cat([x_train, (x1 * onehot[j1] + (1.0 - x1) * onehot[j2]).unsqueeze(0)], dim=0)
+            x_train = torch.cat([x_train, simplex_row(onehot, j1, j2, x1).unsqueeze(0)], dim=0)
             tries_left[k] -= 1
 
         normalizer.maybe_expand(p_real)

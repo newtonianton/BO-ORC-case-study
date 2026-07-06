@@ -7,7 +7,7 @@ These were previously duplicated between the init and loop phases of every pipel
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -22,6 +22,18 @@ from .. import thermo
 logger = get_logger(__name__)
 
 TKWARGS = {"device": "cpu", "dtype": torch.double}
+
+# Standardized evaluation-phase labels, shared by both pipelines so the ``phase`` column of
+# ``scbo_results.csv`` and the ``[PHASE order]`` log lines mean the same thing everywhere:
+#   INIT   - initial batch of ORC-evaluated candidates, before any surrogate-guided search
+#            (one-stage: Latin-hypercube init; two-stage: Step 7 SCBO of the reached targets).
+#   OPT    - surrogate-guided optimization/exploitation loop
+#            (one-stage: qLogEI loop; two-stage: Step 8 cEI loop).
+#   TARGET - two-stage property-space targeting progress (Steps 1-6); writes no result rows,
+#            appears in logs only.
+PHASE_INIT = "INIT"
+PHASE_OPT = "OPT"
+PHASE_TARGET = "TARGET"
 
 
 @dataclass(frozen=True)
@@ -149,14 +161,45 @@ def realize_candidate(
                      name, wf, tc, pc, ptriple, x_onehot)
 
 
+def format_run_header(
+    config: AppConfig,
+    *,
+    stage: str,
+    mode: str,
+    seed: int,
+    n_init: int,
+    scbo_budget: int,
+) -> str:
+    """Build a ``#``-commented parameter block for the top of ``summary.txt``.
+
+    Records the run arguments and the full resolved configuration so multiple seed runs can
+    be checked for parameter consistency before their results are pooled (the config
+    directory name does not encode most hyperparameters). Every line is comment-prefixed so
+    the fluid list written below it stays trivially parseable.
+    """
+    lines = [
+        "# ORC-BO run parameters (these must match across seeds before pooling results)",
+        f"# run: stage={stage} mode={mode} backend={config.thermo.backend} "
+        f"seed={seed} n_init={n_init} scbo_budget={scbo_budget}",
+        f"# dataset: {config.paths.data_csv}",
+    ]
+    for section in ("orc", "bo", "mixture", "twostage", "thermo"):
+        params = asdict(getattr(config, section))
+        kv = " ".join(f"{k}={v}" for k, v in params.items())
+        lines.append(f"# [{section}] {kv}")
+    lines.append("# ---- evaluated fluids ----")
+    return "\n".join(lines) + "\n"
+
+
 class RunWriter:
     """Incrementally write per-evaluation results, sequence, and summary files.
 
     Files are flushed after every row so partial results survive interruption and remain
-    safe under parallel multi-seed runs.
+    safe under parallel multi-seed runs. An optional ``header`` (see
+    :func:`format_run_header`) is written to the top of ``summary.txt`` as ``#`` comments.
     """
 
-    def __init__(self, outdir: Path) -> None:
+    def __init__(self, outdir: Path, header: Optional[str] = None) -> None:
         outdir.mkdir(parents=True, exist_ok=True)
         self.outdir = outdir
         self._results = open(outdir / "scbo_results.csv", "w", newline="", encoding="utf-8")
@@ -166,6 +209,8 @@ class RunWriter:
         self._sequence_writer = csv.writer(self._sequence)
         self._results_writer.writeheader()
         self._sequence_writer.writerow(["order", "mixture"])
+        if header:
+            self._summary.write(header)
         self._flush()
 
     def record(

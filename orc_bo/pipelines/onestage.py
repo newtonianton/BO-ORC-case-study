@@ -36,7 +36,16 @@ from ..logging_setup import get_logger
 from ..orc_model import ORCSimulator
 from ..scbo import optimize_operating_conditions_robust
 from ..seeding import base_seed
-from .common import Candidate, RunWriter, TKWARGS, load_fluids, realize_candidate
+from .common import (
+    PHASE_INIT,
+    PHASE_OPT,
+    Candidate,
+    RunWriter,
+    TKWARGS,
+    format_run_header,
+    load_fluids,
+    realize_candidate,
+)
 
 logger = get_logger(__name__)
 
@@ -118,13 +127,15 @@ def run_onestage(
         eta, p_evap, p_cond = optimize_operating_conditions_robust(
             cand.wf, cand.pc, cand.ptriple, simulator, config.bo
         )
-        logger.info("[%s-%d] %s: eta=%.5f", phase, order, cand.name, eta)
+        logger.info("[%s %d] %s: eta=%.5f", phase, order, cand.name, eta)
         writer.record(phase, order, mode, cand, eta, p_evap, p_cond)
         x_train_rows.append(cand.x_onehot)
         y_train_vals.append(eta)
         sequence.append(cand.name)
 
-    with RunWriter(subdir) as writer:
+    header = format_run_header(config, stage="onestage", mode=mode, seed=seed,
+                               n_init=n_init, scbo_budget=scbo_budget)
+    with RunWriter(subdir, header=header) as writer:
         # ---- Initialization: Latin-hypercube selections ----
         lhs = torch.tensor(qmc.LatinHypercube(d=t_dim, seed=seed).random(n_init), **TKWARGS)
         order = 0
@@ -135,7 +146,7 @@ def run_onestage(
             if cand is None:
                 continue
             order += 1
-            evaluate_and_record(writer, "INIT", order, cand)
+            evaluate_and_record(writer, PHASE_INIT, order, cand)
 
         if not y_train_vals:
             raise RuntimeError("No initial candidates could be realized")
@@ -163,7 +174,7 @@ def run_onestage(
             if cand is None:
                 continue
             order += 1
-            evaluate_and_record(writer, "LOOP", iteration, cand)
+            evaluate_and_record(writer, PHASE_OPT, iteration, cand)
             x_train = torch.cat([x_train, cand.x_onehot.unsqueeze(0)], dim=0)
             y_train = torch.cat([y_train, torch.tensor([[y_train_vals[-1]]], **TKWARGS)], dim=0)
 

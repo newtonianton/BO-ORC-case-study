@@ -1,0 +1,13 @@
+order,mixture
+1,R21[0.50]&EthylBenzene[0.50]
+2,n-Octane[0.50]&MM[0.50]
+3,HeavyWater[0.50]&trans-2-Butene[0.50]
+4,trans-2-Butene[0.41]&Benzene[0.59]
+5,EthylBenzene[0.38]&Benzene[0.62]
+6,Toluene[0.40]&Benzene[0.60]
+7,HeavyWater[0.33]&Benzene[0.67]
+8,Benzene[0.30]&HeavyWater[0.70]
+9,m-Xylene[0.50]&n-Heptane[0.50]
+10,Isohexane[0.50]&MD3M[0.50]
+11,n-Butane[0.48]&n-Dodecane[0.52]
+12,R123[0.48]&n-Dodecane[0.52]

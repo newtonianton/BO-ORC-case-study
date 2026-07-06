@@ -228,6 +228,51 @@ def snap_to_mixture(
     return (j1, best["j2"], best["x1"])
 
 
+def snap_to_vertex_novel(
+    x_suggestion: torch.Tensor,
+    onehot_tensor: torch.Tensor,
+    evaluated: Set["MixtureKey"],
+) -> int:
+    """Pure mode: nearest vertex whose ``(j, None, 1.0)`` key is not yet evaluated.
+
+    Falls back to the strictly-nearest vertex once every fluid has been evaluated. This is
+    the pure-fluid analogue of :func:`snap_to_mixture`'s novelty preference, so the two-stage
+    targeting loop does not keep re-proposing the same pure fluid.
+    """
+    distances = torch.norm(onehot_tensor - x_suggestion.unsqueeze(0), dim=1)
+    for idx in torch.argsort(distances).tolist():
+        if (int(idx), None, 1.0) not in evaluated:
+            return int(idx)
+    return int(torch.argmin(distances).item())
+
+
+def snap_selection(
+    mode: str,
+    x_suggestion: torch.Tensor,
+    onehot_tensor: torch.Tensor,
+    evaluated: Set["MixtureKey"],
+    composition_threshold: float = DEFAULT_COMPOSITION_THRESHOLD,
+) -> "MixtureKey":
+    """Snap a continuous suggestion to a selection for the given mode.
+
+    ``"pure"`` -> ``(j, None, 1.0)`` (nearest novel vertex); ``"mixture"`` -> a binary
+    ``(j1, j2, x1)`` edge selection. One call unifies the two BO fluid spaces so pipelines
+    can be written mode-agnostically.
+    """
+    if mode == "pure":
+        return (snap_to_vertex_novel(x_suggestion, onehot_tensor, evaluated), None, 1.0)
+    return snap_to_mixture(
+        x_suggestion, onehot_tensor, evaluated, composition_threshold=composition_threshold
+    )
+
+
+def simplex_row(onehot_tensor: torch.Tensor, j1: int, j2: Optional[int], x1: float) -> torch.Tensor:
+    """Relaxed one-hot coordinates of a selection: a vertex (pure) or an edge point (mixture)."""
+    if j2 is None:
+        return onehot_tensor[j1]
+    return x1 * onehot_tensor[j1] + (1.0 - x1) * onehot_tensor[j2]
+
+
 def make_refprop_mixture_string(fluid1: str, fluid2: str, x1: float) -> str:
     """Build a REFPROP mixture string, e.g. ``"REFPROP::R32[0.70000000]&R125[0.30000000]"``."""
     x2 = 1.0 - x1

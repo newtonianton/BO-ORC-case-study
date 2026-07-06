@@ -121,6 +121,11 @@ Outputs (under `runs/pure_onestage/seed_000/`):
 | `sequence.csv`     | order of evaluation |
 | `summary.txt`      | list of evaluated fluids |
 
+Both pipelines tag every evaluation with a standardized `phase`: **`INIT`** for the initial
+batch (before surrogate-guided search) and **`OPT`** for the surrogate-guided optimization
+loop. The two-stage pipeline additionally emits `TARGET` log lines during property-space
+targeting (Steps 1–6), which produce no result rows. Logs read `[PHASE order] fluid: eta=…`.
+
 ### Mixture fluids
 
 Snap to edges between vertices; each candidate is a binary mixture with a mole fraction.
@@ -144,7 +149,10 @@ PYTHONHASHSEED=0 python -m orc_bo.cli twostage \
 
 The two-stage pipeline runs an 8-step procedure. The numbering is inherited from the
 original algorithm's flowchart; in the current code Steps 1–5 happen up front as one
-setup/targeting block and only **Steps 6–8 are logged** (`[Step 6]`, `[Step 7]`, `[Step 8]`).
+setup/targeting block and only **Steps 6–8 produce output**. These are logged (and, for
+Steps 7–8, tagged in the `phase` column) with the standardized labels **`TARGET`** (Step 6),
+**`INIT`** (Step 7), and **`OPT`** (Step 8) — the same `INIT`/`OPT` labels the one-stage
+pipeline uses, so the two pipelines' result files are directly comparable.
 It uses three precise notions of "feasibility" (see the `twostage.py` glossary):
 **reachability** (a property target is near a realizable fluid), **validity** (a fluid has a
 constraint-feasible operating point), and **constraint feasibility** (a specific
@@ -165,17 +173,17 @@ constraint-feasible operating point), and **constraint feasibility** (a specific
    `target_budget` tries per target.
 5. **Reachability labelling** — `success_mask` marks which targets have a realized fluid
    within `radius_norm` (i.e. *reached*).
-6. **GPC space-filling** *(logged)* — while fewer than `required_valid_init` targets are
+6. **GPC space-filling** *(phase `TARGET`)* — while fewer than `required_valid_init` targets are
    reached: train the **reachability** GPC, propose new targets (also drawn from the operable
    `Tc` band) in regions it predicts reachable (`greedy_maximin`), and re-run targeting. Stops
    when enough targets are reached or `gpc_max_rounds` is hit.
 
 **Stage 2 — Realization & exploitation (Steps 7–8):** turn reached mixtures into operable designs.
 
-7. **SCBO realization** *(logged)* — for each reached mixture, SCBO optimizes the operating
+7. **SCBO realization** *(phase `INIT`)* — for each reached mixture, SCBO optimizes the operating
    pressures `(p_evap, p_cond)` subject to the constraints, returning efficiency (or the
    infeasible penalty). This is where **validity** is actually tested.
-8. **cEI exploitation** *(logged)* — a bounded loop proposing further mixtures, scored by
+8. **cEI exploitation** *(phase `OPT`)* — a bounded loop proposing further mixtures, scored by
    **EI × reachability (`P_prop`) × validity (`P_sys`)**, SCBO-ing each and feeding the
    outcome back to retrain the validity GPC and the efficiency GP. Runs `--scbo-budget`
    proposals (falling back to `[twostage] system_budget`), stopping early after
@@ -191,7 +199,7 @@ python -m benchmarks.run_benchmark \
     --outdir bench/pure --workers 4
 
 # Aggregate any results tree into a summary table (CSV + LaTeX)
-python benchmarks/aggregate_results.py bench/pure --latex
+python -m benchmarks.aggregate_results bench/pure --latex
 ```
 
 A hyperparameter sweep adds extra config directories:

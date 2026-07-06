@@ -46,7 +46,7 @@ import torch
 from scipy.stats import qmc
 
 from ..config import AppConfig
-from ..geometry import MixtureKey, format_mixture_name, snap_to_mixture
+from ..geometry import MixtureKey, format_mixture_name, snap_selection
 from ..logging_setup import get_logger
 from ..orc_model import ORCSimulator
 from ..scbo import optimize_operating_conditions_robust
@@ -61,7 +61,18 @@ from ..targeting import (
     train_gpc,
 )
 from .. import thermo
-from .common import Candidate, Fluid, RunWriter, TKWARGS, load_fluids, realize_candidate
+from .common import (
+    PHASE_INIT,
+    PHASE_OPT,
+    PHASE_TARGET,
+    Candidate,
+    Fluid,
+    RunWriter,
+    TKWARGS,
+    format_run_header,
+    load_fluids,
+    realize_candidate,
+)
 
 logger = get_logger(__name__)
 
@@ -164,14 +175,16 @@ def run_twostage(
     metadata: List[MixtureKey] = []
     p_rows: List[List[float]] = []
 
-    # ---- Stage 1, Step 1-5: initial LHS mixtures and their properties ----
+    # ---- Stage 1, Step 1-5: initial LHS selections and their properties ----
     lhs = torch.tensor(qmc.LatinHypercube(d=t_dim, seed=seed).random(n=n_init), **TKWARGS)
     for k in range(lhs.shape[0]):
-        j1, j2, x1 = snap_to_mixture(lhs[k], onehot, evaluated_mixtures, composition_threshold=threshold)
+        j1, j2, x1 = snap_selection(mode, lhs[k], onehot, evaluated_mixtures, threshold)
         evaluated_mixtures.add((j1, j2, x1))
-        f1, f2 = fluids[j1], fluids[j2]
+        f1 = fluids[j1]
+        f2 = fluids[j2] if j2 is not None else None
         tc, pc = thermo.critical_properties(
-            f1.name, f2.name, x1, config.thermo, refprop1=f1.refprop, refprop2=f2.refprop
+            f1.name, f2.name if f2 else None, x1, config.thermo,
+            refprop1=f1.refprop, refprop2=f2.refprop if f2 else None,
         )
         metadata.append((j1, j2, x1))
         p_rows.append([tc, pc])
@@ -199,10 +212,10 @@ def run_twostage(
 
     metadata, p_real, evaluated_mixtures, _ = run_targeting(
         asked_targets_real, metadata, p_real, normalizer, onehot, evaluated_mixtures,
-        fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget,
+        fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget, mode=mode,
     )
 
-    # ---- Step 6: reachability-GPC space-filling rounds until enough targets are reached ----
+    # ---- Step 6 (phase TARGET): reachability-GPC space-filling until enough targets reached ----
     normalizer.maybe_expand(p_real)
     flags, _, _ = success_mask(
         normalizer.to_norm(p_real, clip=False),
@@ -211,8 +224,8 @@ def run_twostage(
     # labels/num_valid track REACHABILITY (a target was reached), not validity (operability).
     labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
     num_reached = int(sum(flags))
-    logger.info("[Step 6] initially reached %d of %d targets (need >= %d to skip space-filling)",
-                num_reached, len(asked_targets_real), ts.required_valid_init)
+    logger.info("[%s] initially reached %d of %d targets (need >= %d to skip space-filling)",
+                PHASE_TARGET, num_reached, len(asked_targets_real), ts.required_valid_init)
 
     gpc_round = 0
     while num_reached < ts.required_valid_init and gpc_round < ts.gpc_max_rounds:
@@ -227,8 +240,8 @@ def run_twostage(
         proba = gpc_predict_proba(model, likelihood, candidates)
         reachable = candidates[proba >= ts.gpc_feasibility_threshold]
         if reachable.numel() == 0:
-            logger.info("[Step 6] reachability GPC found no reachable region in round %d; stopping",
-                        gpc_round)
+            logger.info("[%s] reachability GPC found no reachable region in round %d; stopping",
+                        PHASE_TARGET, gpc_round)
             break
         to_add = ts.required_valid_init - num_reached
         new_targets_norm = greedy_maximin(x_targets, reachable, k=to_add)
@@ -236,7 +249,7 @@ def run_twostage(
 
         metadata, p_real, evaluated_mixtures, _ = run_targeting(
             new_targets_real, metadata, p_real, normalizer, onehot, evaluated_mixtures,
-            fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget,
+            fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget, mode=mode,
         )
         asked_targets_real = torch.cat([asked_targets_real, new_targets_real], dim=0)
         normalizer.maybe_expand(p_real)
@@ -246,10 +259,10 @@ def run_twostage(
         )
         labels = torch.tensor([[1.0 if f else 0.0] for f in flags], **TKWARGS)
         num_reached = int(sum(flags))
-        logger.info("[Step 6] after round %d: reached %d of %d targets (need >= %d)",
-                    gpc_round, num_reached, len(asked_targets_real), ts.required_valid_init)
+        logger.info("[%s] after round %d: reached %d of %d targets (need >= %d)",
+                    PHASE_TARGET, gpc_round, num_reached, len(asked_targets_real), ts.required_valid_init)
 
-    # ---- Step 7: SCBO on the earliest satisfied targets' realized mixtures ----
+    # ---- Step 7 (phase INIT): SCBO on the earliest satisfied targets' realized mixtures ----
     _, success_rows, _ = success_mask(
         normalizer.to_norm(p_real, clip=False),
         normalizer.to_norm(asked_targets_real, clip=False), ts.radius_norm,
@@ -261,11 +274,13 @@ def run_twostage(
     n_scbo = 0
     scbo_props: List[List[float]] = []
     scbo_eta: List[float] = []
-    with RunWriter(subdir) as writer:
+    header = format_run_header(config, stage="twostage", mode=mode, seed=seed,
+                               n_init=n_init, scbo_budget=scbo_budget)
+    with RunWriter(subdir, header=header) as writer:
         order = 0
         for idx in realized_ids[: ts.required_valid_init]:
             j1, j2, x1 = metadata[idx]
-            cand = realize_candidate("mixture", j1, j2, x1, fluids, onehot, config)
+            cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
             if cand is None:
                 continue
             eta, p_evap, p_cond = optimize_operating_conditions_robust(
@@ -273,18 +288,18 @@ def run_twostage(
             )
             order += 1
             n_scbo += 1
-            writer.record("STEP7", order, "mixture", cand, eta, p_evap, p_cond)
+            writer.record(PHASE_INIT, order, mode, cand, eta, p_evap, p_cond)
             scbo_props.append([cand.tc, cand.pc])
             scbo_eta.append(eta)
-            logger.info("[Step 7] %s: eta=%.5f", cand.name, eta)
+            logger.info("[%s %d] %s: eta=%.5f", PHASE_INIT, order, cand.name, eta)
             if eta > best_eta:
                 best_eta, best_name = eta, cand.name
 
-        # ---- Step 8: bounded cEI exploitation (EI x reachability x validity weighted) ----
+        # ---- Step 8 (phase OPT): bounded cEI exploitation (EI x reachability x validity) ----
         best_eta, best_name, order = _exploitation_loop(
             writer, order, fluids, onehot, evaluated_mixtures, normalizer,
             asked_targets_real, labels, simulator, config, best_eta, best_name,
-            scbo_props, scbo_eta, system_budget=scbo_budget,
+            scbo_props, scbo_eta, system_budget=scbo_budget, mode=mode,
         )
 
     result = TwoStageResult(
@@ -316,6 +331,7 @@ def _exploitation_loop(
     scbo_props: List[List[float]],
     scbo_eta: List[float],
     system_budget: int,
+    mode: str = "mixture",
     n_screen: int = 64,
 ) -> tuple[float, str, int]:
     """Step-8 probability-weighted cEI exploitation loop.
@@ -334,7 +350,7 @@ def _exploitation_loop(
     """
     ts = config.twostage
     if labels.sum() <= 0:
-        logger.info("[Step 8] no reached targets to train the reachability GPC; skipping")
+        logger.info("[%s] no reached targets to train the reachability GPC; skipping", PHASE_OPT)
         return best_eta, best_name, order
 
     # P_prop: reachability GPC over property-target coordinates.
@@ -363,10 +379,11 @@ def _exploitation_loop(
                 y_eta = torch.tensor([e for _, e in valid_pts], **TKWARGS).reshape(-1, 1)
                 eff_gp = fit_target_gp(P_valid, y_eta)
         chosen = _propose_by_cei(
-            prop_model, prop_lik, orc_gpc, orc_lik, eff_gp, best_eta, fluids, onehot, evaluated_mixtures, normalizer, config, n_screen
+            prop_model, prop_lik, orc_gpc, orc_lik, eff_gp, best_eta, fluids, onehot,
+            evaluated_mixtures, normalizer, config, mode, n_screen,
         )
         if chosen is None:
-            logger.info("[Step 8] no novel candidate could be realized; stopping")
+            logger.info("[%s] no novel candidate could be realized; stopping", PHASE_OPT)
             break
 
         eta, p_evap, p_cond = optimize_operating_conditions_robust(
@@ -374,10 +391,10 @@ def _exploitation_loop(
         )
         order += 1
         budget -= 1
-        writer.record("STEP8", order, "mixture", chosen, eta, p_evap, p_cond)
+        writer.record(PHASE_OPT, order, mode, chosen, eta, p_evap, p_cond)
         scbo_props.append([chosen.tc, chosen.pc]) # outcome goes back into next iteration
         scbo_eta.append(eta)
-        logger.info("[Step 8] %s: eta=%.5f", chosen.name, eta)
+        logger.info("[%s %d] %s: eta=%.5f", PHASE_OPT, order, chosen.name, eta)
         if eta > 0:
             failures = 0
             if eta > best_eta:
@@ -400,6 +417,7 @@ def _propose_by_cei(
     evaluated_mixtures: Set[MixtureKey],
     normalizer: PropNormalizer,
     config: AppConfig,
+    mode: str,
     n_screen: int,
 ) -> Optional[Candidate]:
     """Screen novel candidates; pick max of EI x P_prop x P_sys."""
@@ -407,14 +425,14 @@ def _propose_by_cei(
     seen: Set[MixtureKey] = set()
     suggestions = torch.rand(n_screen, onehot.shape[0], **TKWARGS)
     for i in range(n_screen):
-        j1, j2, x1 = snap_to_mixture(
-            suggestions[i], onehot, evaluated_mixtures,
-            composition_threshold=config.mixture.composition_threshold,
+        j1, j2, x1 = snap_selection(
+            mode, suggestions[i], onehot, evaluated_mixtures,
+            config.mixture.composition_threshold,
         )
         if (j1, j2, x1) in evaluated_mixtures or (j1, j2, x1) in seen:
             continue
         seen.add((j1, j2, x1))
-        cand = realize_candidate("mixture", j1, j2, x1, fluids, onehot, config)
+        cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
         if cand is not None:
             realized.append(cand)
 

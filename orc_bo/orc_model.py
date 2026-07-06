@@ -54,6 +54,12 @@ class ORCSimulator:
         o = self.orc
         self._hin_src = thermo.enthalpy_tp("water", o.t_in_source_c + 273.15, o.source_pressure_pa)
         self._hout_src = thermo.enthalpy_tp("water", o.t_out_source_c + 273.15, o.source_pressure_pa)
+        # Physical efficiency ceiling: the Carnot bound between the hottest source and coldest
+        # sink temperatures. No real cycle can exceed it, so any computed eta above it is a
+        # numerical artifact (e.g. a fabricated isentropic state) and is rejected below.
+        t_hot = o.t_in_source_c + 273.15
+        t_cold = o.t_in_sink_c + 273.15
+        self._carnot = 1.0 - t_cold / t_hot if t_hot > 0 else 1.0
         # Backend-coverage instrumentation (per fluid handed to can_evaluate).
         self.n_evaluations = 0
         self.n_backend_failures = 0
@@ -153,7 +159,8 @@ class ORCSimulator:
             w_gen = o.generator_eff * w_turb
             eta = (w_gen - w_pump) / q_evap
 
-            if not np.isfinite(eta) or eta < 0 or eta > o.eta_max:
+            ceiling = min(o.eta_max, self._carnot)
+            if not np.isfinite(eta) or eta < 0 or eta > ceiling:
                 return self._penalty
 
             return SimulationResult(eta, snk_pinch, src_pinch)

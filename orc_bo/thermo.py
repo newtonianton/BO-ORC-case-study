@@ -338,19 +338,32 @@ def h_isentropic_from_s_p(
         state.update(CP.HmassP_INPUTS, h, p)
         return state.smass() - s_target
 
+    # Bisect for the enthalpy whose entropy matches the target. If the bracket does not
+    # enclose a sign change (the target entropy lies outside the two-phase range) or the
+    # backend returns a non-finite residual, the isentropic state cannot be trusted: raise
+    # rather than return the bracket midpoint. Returning the midpoint historically fabricated
+    # a plausible-looking enthalpy that produced above-Carnot efficiencies; the caller
+    # (:meth:`ORCSimulator.simulate`) instead treats the raised error as an infeasible point.
     try:
         f_lo, f_hi = entropy_residual(lo), entropy_residual(hi)
-        if np.isnan(f_lo) or np.isnan(f_hi) or f_lo * f_hi > 0:
-            return 0.5 * (lo + hi)
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
+    except ThermoError as exc:
+        raise ValueError(f"isentropic solve could not evaluate the bracket for {wf}") from exc
+    if not np.isfinite(f_lo) or not np.isfinite(f_hi) or f_lo * f_hi > 0:
+        raise ValueError(
+            f"isentropic solve could not bracket the target entropy for {wf} at p={p:.0f} Pa"
+        )
+    for _ in range(60):
+        if abs(hi - lo) < 1e-3:
+            break
+        mid = 0.5 * (lo + hi)
+        try:
             f_mid = entropy_residual(mid)
-            if not np.isfinite(f_mid) or abs(hi - lo) < 1e-3:
-                return mid
-            if f_mid * f_lo < 0:
-                hi, f_hi = mid, f_mid
-            else:
-                lo, f_lo = mid, f_mid
-        return 0.5 * (lo + hi)
-    except ThermoError:
-        return 0.5 * (lo + hi)
+        except ThermoError as exc:
+            raise ValueError(f"isentropic solve failed during bisection for {wf}") from exc
+        if not np.isfinite(f_mid):
+            raise ValueError(f"isentropic solve produced a non-finite residual for {wf}")
+        if f_mid * f_lo < 0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+    return 0.5 * (lo + hi)
