@@ -8,6 +8,7 @@ bundles them and can be loaded from a TOML file and/or environment variables.
 Environment overrides (applied on top of file/defaults):
     ORC_BO_BACKEND       -> thermo.backend ("REFPROP" or "HEOS")
     ORC_BO_DATA_CSV      -> paths.data_csv
+    ORC_BO_N_TARGETS     -> twostage.n_property_targets (pre-SCBO coverage; for sweeps)
     ORC_BO_REFPROP_PATH  -> REFPROP install directory (see orc_bo.thermo; default is the
                             standard Windows location C:\\Program Files (x86)\\REFPROP)
 """
@@ -93,8 +94,11 @@ class TwoStageConfig:
     """Hyperparameters specific to the two-stage property-targeting pipeline."""
 
     n_property_targets: int = 20
-    # required_valid_init counts REACHED targets (reachability), not validity/operability.
-    required_valid_init: int = 8
+    # required_valid_init counts REACHED targets (reachability), not validity/operability, and
+    # caps the Step-7 realisation batch. Set equal to the one-stage n_init so both pipelines
+    # spend the same number of initial (pre-exploitation) SCBO evaluations (budget-matched
+    # comparison): with n_init=5 and system_budget=20, each pipeline uses 5 + 20 = 25.
+    required_valid_init: int = 5
     target_budget: int = 3
     radius_norm: float = 0.15
     # Probability threshold for the REACHABILITY GPC (a property region is reachable).
@@ -105,11 +109,17 @@ class TwoStageConfig:
     gpc_lr: float = 0.1
     # Step-8 cEI exploitation loop.
     system_budget: int = 3
-    failure_allowance: int = 3
-    # Operable critical-temperature band [K] for property targets. None -> derived from the
-    # ORC source temperature (tc_min = source, tc_max = source + 200 K). Targets (Steps 3 & 6)
-    # are sampled only within this band, concentrating the search on fluids that can actually
-    # run the cycle instead of e.g. 700 K siloxanes. The band is clamped to the observed range.
+    # Early stopping: halt Step 8 after this many consecutive invalid proposals. Set <= 0 to
+    # DISABLE (run the full budget) — required for a budget-matched comparison, since early
+    # stopping otherwise makes two-stage under-spend relative to one-stage's fixed loop.
+    failure_allowance: int = 0
+    # Operable-Tc-band prior on property targets. OFF by default, so two-stage targets the full
+    # observed (Tc, Pc) range like one-stage and the comparison isolates the algorithm rather
+    # than a domain prior. Set use_tc_band=True to restrict targets to the operable band
+    # [tc_min_k or source, tc_max_k or source+200 K] -- concentrates the SCBO budget on fluids
+    # that can run the cycle (e.g. excludes 700 K siloxanes), but injects domain knowledge that
+    # the one-stage pipeline does not receive. The band is clamped to the observed range.
+    use_tc_band: bool = False
     tc_min_k: Optional[float] = None
     tc_max_k: Optional[float] = None
 
@@ -188,6 +198,12 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     data_csv = os.environ.get("ORC_BO_DATA_CSV")
     if data_csv:
         config = replace(config, paths=replace(config.paths, data_csv=Path(data_csv)))
+
+    n_targets = os.environ.get("ORC_BO_N_TARGETS")
+    if n_targets:
+        config = replace(
+            config, twostage=replace(config.twostage, n_property_targets=int(n_targets))
+        )
 
     return config
 

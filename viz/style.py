@@ -15,6 +15,7 @@ All hex values are from the method's validated reference palette.
 """
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,8 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Default locations (overridable by callers).
-DATA_ROOT = REPO_ROOT / "bench" / "full"
+# Default locations. DATA_ROOT can be overridden with the ORC_BO_BENCH environment variable
+# so a renamed results tree does not need a code edit.
+DATA_ROOT = Path(os.environ.get("ORC_BO_BENCH", REPO_ROOT / "bench" / "full2"))
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 
 # ---- Palette (validated reference instance) -------------------------------------------

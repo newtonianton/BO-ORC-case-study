@@ -1,7 +1,7 @@
 # Visualisation suite
 
 Static figures for the ORC-BO benchmark study. Every script reads the per-seed
-`scbo_results.csv` files under `bench/full/<stage>_<mode>/seed_*/` and writes PNGs into
+`scbo_results.csv` files under `bench/full2/<stage>_<mode>/seed_*/` and writes PNGs into
 **one** folder: [`figures/`](figures/).
 
 ## Run
@@ -11,7 +11,8 @@ python viz/make_all.py                 # render everything into viz/figures/
 python viz/make_all.py --figdir out/   # or elsewhere
 ```
 
-Each suite is also runnable on its own: `python viz/convergence.py`, etc.
+The results tree defaults to `bench/full2`; point elsewhere with the `ORC_BO_BENCH`
+environment variable. Each suite is also runnable on its own: `python viz/convergence.py`, etc.
 
 ## Figures
 
@@ -30,22 +31,32 @@ carried by panel/x-group, never colour, so the stage comparison stays consistent
 figure. Efficiency magnitude uses a single-hue blue sequential ramp. Palette and matplotlib
 defaults live in [`style.py`](style.py).
 
-## Caveats these figures surfaced (both now fixed in code)
+## Findings (bench/full2, 20 seeds/config)
 
-These two data-quality bugs were found *by* the figures below and have since been fixed in
-the package. **The `bench/full/` tree was generated before the fixes, so the current figures
-still show the buggy data — regenerate the benchmark and re-render to get clean results:**
+| Configuration | Mean best η | 95% CI | std | Max | Feasible |
+|---|---|---|---|---|---|
+| **two-stage · pure** | **0.1356** | [0.1347, 0.1363] | ±0.0019 | 0.1377 | 84% |
+| two-stage · mixture | 0.1278 | [0.1249, 0.1310] | ±0.0071 | 0.1454 | 73% |
+| one-stage · pure | 0.1266 | [0.1229, 0.1301] | ±0.0084 | 0.1407 | 97% |
+| one-stage · mixture | 0.1240 | [0.1203, 0.1276] | ±0.0086 | 0.1417 | 81% |
 
-```bash
-python -m benchmarks.run_benchmark --stages onestage,twostage --modes pure,mixture \
-    --backend REFPROP --seeds 20 --n-init 5 --scbo-budget 20 --outdir bench/full --workers 4
-python viz/make_all.py
-```
+- **Two-stage beats one-stage in both fluid spaces** — property-targeting helps.
+- **`two-stage · pure` is significantly best and remarkably consistent** (non-overlapping CI,
+  std ±0.0019). It concentrates on the top pure fluids — Methanol won the best-fluid slot in
+  10/20 seeds, Ethanol in 4. One-stage · pure instead scatters across 14 different winners,
+  which is why its mean is lower and its variance ~4× larger.
+- **Consistency, not a higher ceiling.** Two-stage · pure's *max* (0.1377) is actually below
+  one-stage · pure's (0.1407, a lucky Water seed); the gap is SCBO pressure-optimisation noise
+  on the same top fluids. Mixtures hold the single highest max of all (0.1454) but with more
+  variance and the lowest feasibility (73%).
+- **Caveat for write-up:** two-stage · pure's tiny variance partly reflects the small candidate
+  pool (~61 discrete vertices) — targeting over a handful of points converges hard. State this
+  so it is not over-read as a general BO property.
 
-- **`twostage_pure` was identical to `twostage_mixture`.** The two-stage pipeline ignored
-  `--mode pure` and always snapped to mixtures. Fixed: it now snaps to pure vertices in pure
-  mode, so the two trees will differ after re-running.
-- **A few two-stage seeds reported η ≈ 0.33** (above the ~0.295 Carnot bound). The
-  isentropic-enthalpy solver fabricated a bracket midpoint on flash failure. Fixed: the solver
-  now raises on genuine failure and the simulator rejects any η above the Carnot ceiling, so
-  no unphysical efficiencies can be recorded.
+## History
+
+This suite earned its keep on first run: it caught two data-quality bugs that a mean-only
+table had hidden — the two-stage pipeline silently ignoring `--mode pure`, and an isentropic
+solver fabricating above-Carnot efficiencies. Both are now fixed in the package (mode-aware
+snapping; the solver raises on failure and the simulator enforces a Carnot ceiling), and the
+numbers above are from a clean re-run.

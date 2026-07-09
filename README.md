@@ -164,19 +164,22 @@ constraint-feasible operating point), and **constraint feasibility** (a specific
    snap each to a binary mixture.
 2. **Property evaluation** — compute `(Tc, Pc)` for each initial mixture (REFPROP, or the
    mixing-rule fallback) and fit the property normalizer.
-3. **Initial targets** — draw `n_property_targets` Latin-hypercube points as goals, sampled
-   only within the **operable `Tc` band** `[tc_min_k, tc_max_k]` (default: source temperature
-   → source + 200 K, clamped to the observed range). This keeps targets on fluids that can
-   actually run the cycle instead of e.g. 700 K siloxanes.
+3. **Initial targets** — draw `n_property_targets` Latin-hypercube points as goals over the
+   observed `(Tc, Pc)` range. Optionally (`use_tc_band=True`, **off by default**) restrict the
+   `Tc` axis to the **operable band** `[tc_min_k or source, tc_max_k or source+200 K]`, which
+   keeps targets on fluids that can run the cycle (excludes e.g. 700 K siloxanes) but injects a
+   domain prior the one-stage pipeline does not receive — so it is disabled for a budget-matched,
+   prior-free comparison.
 4. **Targeting** — for each unmet target, a GP over one-hot space proposes a mixture that
    moves toward it (qLogEI); realize it and record its properties (`run_targeting`), up to
    `target_budget` tries per target.
 5. **Reachability labelling** — `success_mask` marks which targets have a realized fluid
    within `radius_norm` (i.e. *reached*).
 6. **GPC space-filling** *(phase `TARGET`)* — while fewer than `required_valid_init` targets are
-   reached: train the **reachability** GPC, propose new targets (also drawn from the operable
-   `Tc` band) in regions it predicts reachable (`greedy_maximin`), and re-run targeting. Stops
-   when enough targets are reached or `gpc_max_rounds` is hit.
+   reached: train the **reachability** GPC, propose new targets (over the same `Tc` range as
+   Step 3) in regions it predicts reachable (`greedy_maximin`), and re-run targeting. Stops
+   when enough targets are reached or `gpc_max_rounds` is hit. `required_valid_init` also caps
+   the Step-7 batch; set it equal to `n_init` to match the one-stage pipeline's initial budget.
 
 **Stage 2 — Realization & exploitation (Steps 7–8):** turn reached mixtures into operable designs.
 
@@ -186,8 +189,9 @@ constraint-feasible operating point), and **constraint feasibility** (a specific
 8. **cEI exploitation** *(phase `OPT`)* — a bounded loop proposing further mixtures, scored by
    **EI × reachability (`P_prop`) × validity (`P_sys`)**, SCBO-ing each and feeding the
    outcome back to retrain the validity GPC and the efficiency GP. Runs `--scbo-budget`
-   proposals (falling back to `[twostage] system_budget`), stopping early after
-   `failure_allowance` consecutive invalid (no feasible operating point) evaluations.
+   proposals (falling back to `[twostage] system_budget`). Early stopping after
+   `failure_allowance` consecutive invalid evaluations is **disabled by default**
+   (`failure_allowance = 0`) so the full budget is spent; set it `> 0` to re-enable.
 
 ### Benchmarks
 

@@ -193,21 +193,26 @@ def run_twostage(
     normalizer = PropNormalizer(PROP_NAMES)
     normalizer.fit_from_real_points(p_real)
 
-    # Operable Tc band: restrict property targets to fluids that can actually run the cycle,
-    # rather than the full observed box (which includes inoperable high-Tc fluids). Defaults
-    # derive from the source temperature; clamped to the observed Tc range. Pc spans observed.
+    # Tc range for property targets. When use_tc_band is set, restrict targets to the operable
+    # band (a domain prior that excludes inoperable high-Tc fluids); otherwise targets span the
+    # full observed range, matching the one-stage pipeline's unrestricted fluid access. Pc
+    # always spans the observed range.
     source_k = config.orc.t_in_source_c + 273.15
     obs_tc_lo, obs_tc_hi = float(normalizer.bounds["lower"][0]), float(normalizer.bounds["upper"][0])
-    tc_lo = max(ts.tc_min_k if ts.tc_min_k is not None else source_k, obs_tc_lo)
-    tc_hi = min(ts.tc_max_k if ts.tc_max_k is not None else source_k + 200.0, obs_tc_hi)
-    if tc_hi <= tc_lo:
-        logger.warning("Operable Tc band collapsed; falling back to full observed Tc range")
+    if ts.use_tc_band:
+        tc_lo = max(ts.tc_min_k if ts.tc_min_k is not None else source_k, obs_tc_lo)
+        tc_hi = min(ts.tc_max_k if ts.tc_max_k is not None else source_k + 200.0, obs_tc_hi)
+        if tc_hi <= tc_lo:
+            logger.warning("Operable Tc band collapsed; falling back to full observed Tc range")
+            tc_lo, tc_hi = obs_tc_lo, obs_tc_hi
+    else:
         tc_lo, tc_hi = obs_tc_lo, obs_tc_hi
     tc_band = (tc_lo, tc_hi)
     pc_bounds = (float(normalizer.bounds["lower"][1]), float(normalizer.bounds["upper"][1]))
-    logger.info("Operable Tc band for targets: [%.1f, %.1f] K (source %.1f K)", tc_lo, tc_hi, source_k)
+    logger.info("Property-target Tc range: [%.1f, %.1f] K (band=%s, source %.1f K)",
+                tc_lo, tc_hi, "on" if ts.use_tc_band else "off", source_k)
 
-    # Initial property targets: LHS within the operable (Tc, Pc) box.
+    # Initial property targets: LHS within the (Tc, Pc) box.
     asked_targets_real = _sample_band(ts.n_property_targets, tc_band, pc_bounds, lhs=True, seed=seed)
 
     metadata, p_real, evaluated_mixtures, _ = run_targeting(
@@ -346,7 +351,8 @@ def _exploitation_loop(
       *valid* outcomes only.
 
     Stops after ``system_budget`` proposals or ``failure_allowance`` consecutive invalid
-    (no feasible operating point) evaluations.
+    (no feasible operating point) evaluations; ``failure_allowance <= 0`` disables early
+    stopping so the full budget is always spent (budget-matched comparison).
     """
     ts = config.twostage
     if labels.sum() <= 0:
@@ -359,7 +365,7 @@ def _exploitation_loop(
 
     budget = system_budget
     failures = 0
-    while budget > 0 and failures < ts.failure_allowance:
+    while budget > 0 and (ts.failure_allowance <= 0 or failures < ts.failure_allowance):
         # (Re)train the validity GPC (P_sys) and efficiency GP from accumulated outcomes.
         orc_gpc = orc_lik = eff_gp = None
         if scbo_props:
