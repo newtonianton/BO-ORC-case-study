@@ -1,0 +1,26 @@
+# ORC-BO run parameters (these must match across seeds before pooling results)
+# run: stage=twostage mode=mixture backend=REFPROP seed=2 n_init=5 scbo_budget=15
+# dataset: C:\Users\natha\OneDrive - Imperial College London\third year\UROP\Calvin\orc_bo\data\Joback_Refrigerants.csv
+# [orc] t_in_source_c=150.0 t_out_source_c=135.0 t_in_sink_c=25.0 t_out_sink_c=35.0 mfr_source=15.0 pump_eff=0.8 turbine_eff=0.65 generator_eff=0.97 source_pressure_pa=500000.0 sink_pressure_pa=400000.0 eta_max=0.35 infeasible_penalty=-0.05 infeasible_pinch=500.0
+# [bo] scbo_dim=2 batch_size=4 scbo_n_init=10 n_candidates=5000 tr_length_init=0.8 tr_length_min=0.015625 tr_length_max=1.6 success_tolerance=3 mc_samples=512 num_restarts=10 raw_samples=512 scbo_max_retries=4 gp_noise=1e-05 gp_max_noise=1.0 cost_budget=20.0 lab_cost=0.1
+# [mixture] min_mole_frac=0.05 composition_threshold=0.01
+# [twostage] n_property_targets=20 required_valid_init=5 target_budget=3 radius_norm=0.15 gpc_feasibility_threshold=0.5 gpc_candidates=20000 gpc_max_rounds=4 gpc_steps=200 gpc_lr=0.1 system_budget=3 step8_proposal=screen failure_allowance=0 use_tc_band=False tc_min_k=None tc_max_k=None
+# [thermo] backend=REFPROP
+# ---- evaluated fluids ----
+p-Xylene[0.46]&R11[0.54]
+R11[0.47]&1-Butene[0.53]
+R11[0.34]&p-Xylene[0.66]
+p-Xylene[0.30]&R11[0.70]
+MD2M[0.42]&p-Xylene[0.58]
+n-Dodecane[0.49]&MD4M[0.51]
+Ethanol[0.49]&IsoButene[0.51]
+Neopentane[0.48]&1-Butene[0.52]
+Isopentane[0.49]&R365MFC[0.51]
+MD2M[0.49]&MethylPalmitate[0.51]
+D6[0.49]&n-Decane[0.51]
+R245fa[0.50]&EthyleneOxide[0.50]
+D5[0.49]&MethylLinolenate[0.51]
+MethylOleate[0.49]&n-Octane[0.51]
+MD4M[0.50]&MethylOleate[0.50]
+Water[0.49]&CycloHexane[0.51]
+# carnot_guard: 1/2948 simulate calls (0.03%) exceeded the eta ceiling 0.2954 and were rejected (negligible)

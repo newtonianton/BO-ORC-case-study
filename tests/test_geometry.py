@@ -84,3 +84,31 @@ def test_refprop_mixture_string_format():
     assert geometry.make_refprop_mixture_string("R32", "R125", 0.7) == (
         "REFPROP::R32[0.70000000]&R125[0.30000000]"
     )
+
+
+def test_lhs_initialisation_split_pure_vs_mixture():
+    """Both pipelines' init: pure LHS points snap to distinct vertices; mixture LHS
+    points project onto binary edges (never a vertex). Regression for the mode split."""
+    from scipy.stats import qmc
+
+    from orc_bo.geometry import snap_selection
+
+    t_dim = 8
+    oh = _onehot(t_dim)
+    lhs = torch.tensor(qmc.LatinHypercube(d=t_dim, seed=0).random(4), dtype=DTYPE)
+
+    evaluated: set = set()
+    pure_keys = []
+    for k in range(4):
+        key = snap_selection("pure", lhs[k], oh, evaluated)
+        evaluated.add(key)
+        pure_keys.append(key)
+    assert all(j2 is None and x1 == 1.0 for (_, j2, x1) in pure_keys)
+    assert len({j1 for (j1, _, _) in pure_keys}) == 4  # novelty: all distinct fluids
+
+    evaluated = set()
+    for k in range(4):
+        j1, j2, x1 = snap_selection("mixture", lhs[k], oh, evaluated)
+        evaluated.add((j1, j2, x1))
+        assert j2 is not None and j1 != j2
+        assert MIN_MOLE_FRAC <= x1 <= MAX_MOLE_FRAC

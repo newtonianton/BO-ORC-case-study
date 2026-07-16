@@ -1,0 +1,523 @@
+\documentclass[preprint,12pt]{elsarticle}
+
+\usepackage{amsmath}
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{multirow}
+\usepackage{todonotes}
+\usepackage{eurosym}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\usepackage{multicol}
+\usepackage{etoolbox}
+\usepackage{nomencl}
+\usepackage{color,soul}
+
+\journal{xxx}
+
+\begin{document}
+
+\begin{frontmatter}
+
+
+\title{Multi-stage Bayesian optimization for integrated molecular and process design}
+
+%% use optional labels to link authors explicitly to addresses:
+\author[label1,label2]{Nathan Tan}
+\author[label1,label3]{Jared L. Stoloff}
+\author[label1,label4]{Gabriel D. Patrón}
+\author[label1,label4]{Calvin Tsay}
+\affiliation[label1]{organization={Department of Computing, Imperial College 
+ London},
+             city={London},
+             postcode={SW7 2AZ},
+             country={United Kingdom}}
+\affiliation[label2]{organization={Department of Mathematics, Imperial College 
+ London},
+             city={London},
+             postcode={SW7 2AZ},
+             country={United Kingdom}}
+\affiliation[label3]{organization={Department of Bioengineering, Imperial College 
+ London},
+             city={London},
+             postcode={SW7 2AZ},
+             country={United Kingdom}}
+\affiliation[label4]{organization={Centre for Process Systems Engineering, Imperial College London},
+             city={London},
+             postcode={SW7 2AZ},
+             country={United Kingdom}}
+             
+%% Abstract
+\begin{abstract}
+
+\end{abstract}
+
+%%Graphical abstract
+\begin{graphicalabstract}
+\begin{figure}[t]
+\centering
+%%\includegraphics[width=1\textwidth]{Figures/graphical_abtract_cvar.pdf}
+\end{figure}
+\end{graphicalabstract}
+
+%%Research highlights
+\begin{highlights}
+\item List
+\end{highlights}
+
+%% Keywords
+\begin{keyword}
+%% keywords here, in the form: keyword \sep keyword
+
+Bayesian optimization \sep Design of experiments \sep Process design 
+
+%% PACS codes here, in the form: \PACS code \sep code
+
+%% MSC codes here, in the form: \MSC code \sep code
+%% or \MSC[2008] code \sep code (2000 is the default)
+
+\end{keyword}
+
+\end{frontmatter}
+
+%% Add \usepackage{lineno} before \begin{document} and uncomment 
+%% following line to enable line numbers
+%% \linenumbers
+
+%% main text
+%%
+
+%% Use \section commands to start a section
+\section{Introduction}
+\label{sec1}
+
+Bayesian optimisation (BO) has established itself as the method of choice for optimising objective functions that are expensive to evaluate, lacking derivative information, and accessible only as black boxes \cite{frazier2018tutorial}. Renowned for being one of the most sample-efficient optimisation methods available, it has applications in many areas including the design of engineered process systems. Many design problems are staged rather than monolithic. A decision variable will usually be related to performance through one or more intermediate quantities, which will vary sharply in the cost required to obtain them. In this paper, we will focus on the instance of a two-map composition, where candidate variables are first mapped by a comparatively cheaper operation, and performance $\eta$ will then be determined by an expensive operation acting on that representation. Thus, exploiting the cost asymmetry with the data-driven approach of Bayesian optimisation in two stages as opposed to collapsing the composition into a single black box is the subject of our work.
+
+Whilst established lines of research approach parts of the described setting, they leave the specific configuration above unaddressed. Bayesian optimisation of composite functions \cite{astudillo2019composite} exploits objectives of the form $g(h(x))$ by modelling the inner map with a multi-output Gaussian process; however, the cost structure is fundamentally different to ours, with the inner map expensive and the outer map cheap.
+
+We demonstrate this framework on the integrated design of molecules and processes: a working fluid determines thermophysical properties (cheaply obtained lab-processed intermediate), which in turn determines the performance of an expensive process once operating conditions are optimised. To be specific, we look at working fluid selection for the Organic Rankine Cycle (ORC), the technology for converting low- and medium-grade heat to power, whose performance depends significantly on fluid choice \cite{camdreview2024, zeotropic2012}. The dominant methodology for this problem is deterministic computer-aided molecular design (CAMD), in which molecular structure and process are optimised together as a mixed-integer nonlinear programme. This method requires a differentiable, embeddable equation of state, designs hypothetical molecules and its fluid rankings are sensitive to the underlying thermodynamic model \cite{accuracy2025}. In contrast,  our black-box formulation requires no differentiable thermodynamics, thus allowing us to use high-accuracy reference property models such as REFPROP \cite{refprop10} and select from a fixed inventory of real and available fluids.
+
+The primary contributions of our work are as follows: first, we formulate a multi-stage Bayesian optimisation framework for staged design problems with cost-asymmetric mappings. We specifically instantiate the two-stage case with a measurable intermediate space, a surrogate-based realisation of intermediate targets, and learned constraints for realisability and validity. Secondly, we introduce a unified geometric representation that places pure candidates at vertices and binary mixtures along edges so that continuous optimisation can address both in a single space. Thirdly, we conduct a controlled evaluation, comparing a single-stage baseline under matching budgets and across multiple seeds. We remark that our formulation generalises to chains of more than two maps, though we do not test this empirically.
+
+The remainder of this paper is organised as follows. Section~\ref{sec:background} reviews the Gaussian-process and Bayesian-optimisation preliminaries. Section~\ref{sec:problem} formulates the general multi-stage problem, whilst Section~\ref{sec:architecture} formulates the architecture our instantiation of the one- and two-stage cases, detailing the inner and outer loops and surrogates involved. Section~\ref{sec:ORC} details the particular Organic Rankine Cycle process we adapt for evaluation. Finally, we analyse and discuss the results of our study in Section~\ref{sec:results} and Section~\ref{sec:conclusion}.
+
+\section{Background}
+\label{sec:background}
+
+\subsection{Gaussian Process Regression}
+\label{GPR}
+
+A Gaussian process (GP) models random variables in the space $\mathcal{X}\subset \mathbb{R}^{n_{x}}$ as a multivariate joint Gaussian (i.e., normal) distribution. A GP is defined by its mean ($\mu(\cdot):\mathcal{X}\rightarrow \mathbb{R}$) and kernel (i.e., covariance, $K(\cdot,\cdot):\mathcal{X}\times\mathcal{X}\rightarrow \mathbb{R}$) priors as:
+
+\begin{equation}
+\label{gp}
+f(\cdot) \sim \mathcal{GP}(\mu(\cdot), K(\cdot,\cdot)),
+\end{equation}
+
+While the mean prior is commonly taken to be zero or a constant value, the choice of kernel dictates the shape of the distribution $f$.
+
+A Gaussian Process Regressor (GPR) uses the above structure and the data $\mathcal{D}=\{(x_{i},f(x_{i}))\}_{i=0}^{T}$ to update distribution predictions in a Bayesian setting. We define the vectors $X=[x_{0},...,x_{T}]^T$ the matrix of training inputs and $y=[f(x_{0}),...,f(x_{T})]^T$ the vector of observations. For a new point, $x_{T+1}$, the posterior mean and variance are:
+
+\begin{eqnarray}
+\label{posterior1} \mu(x|X,y)=K_{xX}K_{XX}^{-1}y \\
+\label{posterior2} K(x|X,y)=K_{xx}-K_{xX}K_{XX}^{-1}K_{Xx},
+\end{eqnarray}
+
+where $K_{XY}:=K(X,Y)$ denotes the covariance matrix evaluated between all points in X and Y.
+
+\subsection{Gaussian Process Classifiers}
+\label{GPC}
+
+Whilst a GPR predicts continuous values by assuming that observations are noisy realisations of a latent function, Gaussian Process Classification (GPC) uses this same framework to predict categorical class labels. We consider the binary case where $y_i \in \{0, 1\}$ and data $\mathcal{D} = \{(x_i, y_i)\}^T_{i=0}$.
+
+As before, we place a GP prior on a latent function, $f(\cdot) \sim \mathcal{GP} (\mu(\cdot), K(\cdot,\cdot))$. The latent value $f(x)$ is unconstrained on $\mathbb{R}$ so we convert it to a valid probability with a link function $\sigma : \mathbb{R} \rightarrow [0, 1]$. We model the observations as Bernoulli draws, $y | f(x) \sim \text{Bernoulli}(\sigma(f(x)))$. However, because of the introduction of this non-Gaussian likelihood, conjugacy of the posterior is lost and the now intractable posterior must thus be approximated.
+
+Popular approximation methods include the Laplace approximation (local expansion about the mode) and variational inference (minimising the Kullback-Leibler (KL) divergence to a family of Gaussian distributions).
+
+Finally, given a Gaussian approximation, prediction proceeds in two stages. Firstly, the approximate posterior is propagated to a new point $x_{T+1}$ similarly as in regression, yielding a Gaussian predictive distribution over $f(x_{T+1})$ which has mean and variance:
+
+\begin{align*}
+\mu(x_{T+1}|X,y) &= K_{x_{T+1}X} K_{XX}^{-1} \hat{f} 
+\\
+K(x_{T+1}|X,y) &= K_{x_{T+1}x_{T+1}} - K_{x_{T+1}X} (K_{XX} + W^{-1})^{-1} K_{X x_{T+1}}   
+\end{align*}
+
+This latent Gaussian is then pushed through the link function and marginalised
+
+$$
+p(y_{T+1}=1 \mid X, y) = \int \sigma(f(x_{T+1})) q(f(x_{T+1})) df(x_{T+1})
+$$
+to give the predicted class probability. Note this final integral is one-dimensional, so is cheap to evaluate, whether in closed form or by quadrature.
+
+\subsection{Bayesian Optimization}
+\label{BO}
+We now have the necessary tools to introduce Bayesian optimisation (BO). BO refers to a class of algorithms designed to efficiently solve 
+$$
+\max_{x \in A} f(x)
+$$
+BO consists of two main parts: a Bayesian statistical model to model the objective function and an acquisition function to choose where next to sample. Firstly, we evaluate the objective with an initial space-filling experiment, which is then filtered into the main BO loop.
+\begin{algorithm}
+\caption{Basic pseudo-code for Bayesian optimization \cite{frazier2018tutorial}}
+\begin{algorithmic}
+\State Place a Gaussian process prior on $f$.
+\State Observe $f$ at $n_0$ points according to an initial space-filling experimental design. Set $n = n_0$.
+\While{$n \leq N$}
+    \State Update the posterior probability distribution on $f$ using all available data.
+    \State Let $x_n$ be a maximiser of the acquisition function over $x$, where the acquisition function is computed using the current posterior distribution.
+    \State Observe $y_n = f(x_n)$.
+    \State Increment $n$.
+\EndWhile
+\State \Return A solution: either the point evaluated with the largest $f(x)$, or the point with the largest posterior mean.
+\end{algorithmic}
+\end{algorithm}
+
+
+The most common acquisition function is Expected Improvement, defined as
+$$
+\text{EI}_n(x) := \mathbb{E}_n \left[ f(x) - f^*_n \right]^+
+$$
+where $f^*_n$ is the best observed value so far, and $\mathbb{E}_n[\cdot]$ is the expectation under the posterior GP at step n.
+
+In practice, we use Log Expected Improvement as it is more computationally stable whilst yielding the same optimal point. \cite{ament2023unexpected}
+
+
+
+
+\section{Problem Formulation}
+\label{sec:problem}
+
+We consider the optimisation of an expensive-to-evaluate performance metric over a set of candidate decisions, in a setting where each candidate is related to the performance metric not directly, but through an intermediate representation that is comparatively cheap to obtain. This structure is common to a broad class of design problems - among them the integrated molecular and process design task studied later in Section~\ref{sec:ORC} - and we formulate it here in general terms.
+
+\subsection{A two-map design problem}
+\label{sec:twomap}
+
+Let $c \in \mathcal{C}$ denote a candidate decision drawn from the candidate space, which may be discrete, continuous or mixed. Each candidate is associated with an intermediate representation $p \in \mathcal{P} \subset \mathbb{R}^{n_p}$ through the mapping
+\begin{equation}
+    \mathcal{M} : \mathcal{C} \rightarrow \mathcal{P},
+\end{equation}
+and performance is determined from this representation, together with a set of design conditions $u \in \mathcal{U}(c) \subset \mathbb{R}^{n_u}$ through a testing map
+\begin{equation}
+    \mathcal{T} : \mathcal{P} \times\mathcal{U} \rightarrow \mathbb{R}
+\end{equation}
+
+Performance is therefore the composition
+\begin{equation}
+    \eta = \mathcal{T}(p, u) = \mathcal{T} \big(\mathcal{M}(c), u \big),
+\end{equation}
+in which obtaining the intermediate representation via the measurement operation $\mathcal{M}$ is a prerequisite for, and informative of, the outcome of the testing procedure $\mathcal{T}$. Since we assume no first-principles knowledge of either mapping, treating both as black boxes accessible only through evaluation, we thus build GP surrogates to inform the topology of the mapping and to drive the suggestions of new evaluations.
+
+In this setting, we leverage the fact that the cost associated with the lab-scale measurement operation $\phi_M \in \mathbb{R}$ is often significantly lower than that associated with the process testing procedure $\phi_T \in \mathbb{R}$ (i.e., $\phi_T \gg \phi_M$). This cost asymmetry is central to our methodology: it justifies expending measurement evaluations liberally to characterise $\mathcal{M}$ whilst treating each call to $\mathcal{T}$ as a scarce resource allocated by Bayesian optimisation. We simulate this cost disparity in our current case study.
+
+\subsection{Specific problem space}
+
+We restrict ourselves to a setting in which $n_c$ candidate chemicals can be tested at lab-scale for a set of $n_p$ relevant properties to eventually build a process with $n_u$ operating conditions.
+
+The chemical space $\mathcal{C}$ is inherently discrete, consisting of a library of $n_c$ pure components. We therefore embed these candidate chemicals into a continuous domain using a one-hot encoding as $c\in\mathbb{Z}_{2}^{n_{c}}$ where $\mathbb{Z}_{2}^{n_{c}}$ denotes $n_c$ binary indicators subject to $\lVert c \rVert_1 = 1$, so exactly one component is selected. If we relax this discrete set to the continuous simplex $\Delta^{n_c-1} = \{c \in [0,1]^{n_c} : \lVert c \rVert_1 = 1\}$, this provides a natural physical interpretation: while vertices represent pure fluids, points on the edges represent binary mixtures, and points in the interior represent multicomponent mixtures. Different encodings that contain chemical information (e.g., group contribution methods) may yield better results owing to some embedded domain information. However, we restrict ourselves to one-hot encoding for generality, at the cost of a representation in which all chemicals are mutually equidistant ($\lVert e_i - e_j \rVert_2 = \sqrt{2}$ for $i \neq j$) and no cross-chemical similarity is available to the surrogates. 
+
+
+The measurement procedure ($\mathcal{M}$) maps the chosen chemical in one-hot representation to its $n_{p}$ relevant chemical properties that are measurable at lab-scale, i.e., $\mathcal{M}:\mathbb{Z}_{2}^{n_{c}}\rightarrow \mathcal{P}$. We assume that these chemical properties are bounded such that $p\in \mathcal{P}\subset\mathbb{R}^{n_{p}}$.
+
+The testing procedure ($\mathcal{T}$) takes a given chemical with properties $p$ and a given set of user-specified operating conditions $u\in\mathcal{U}\subset\mathbb{R}^{n_u}$ to build a process and compute a scalar measure of system performance $\eta\in\mathbb{R}$.
+
+
+
+
+
+\hl{Sections below for Nathan}
+
+\label{sec:architecture}
+\section{One-Stage Architecture}
+
+The direct approach optimises over the chemical space itself, treating the end-to-end mapping from chemical selection to optimal performance as a single black box. Mathematically, it attempts to directly solve the nested problem:
+$$c^{\star} = \arg\max_{c\in\mathcal{C}} \max_{u\in\mathcal{U}} \mathcal{T}\big(\mathcal{M}(c), u\big)$$
+by placing one surrogate directly over the chemical representation $c$. Bayesian optimisation then proposes chemicals without explicitly reasoning about their intermediate properties. This is the more parsimonious formulation and requires no explicit model of the measurement map $\mathcal{M}$; its weakness follows from the one-hot representation, in which the mutual equidistance of chemicals leaves the surrogate little structure to exploit. Consequently, acquisition is driven predominantly by posterior uncertainty and the search tends toward uninformed enumeration of the library.
+
+\section{Two-Stage Architecture Overview}
+
+The indirect formulation reasons in the intermediate space $\mathcal{P}$. The premise is twofold: that $\mathcal{P}$ carries more exploitable structure than $\mathcal{C}$, and that the low cost of $\mathcal{M}$ permits this structure to be learned without expending budget to learn $\mathcal{T}$. Relative to the one-stage formulation, we must include a surrogate model of $\mathcal{M}$ to realise a target as a candidate, and a means of encoding that not every target in $\mathcal{P}$ is realisable by a real candidate.
+
+The property-space architecture utilises a hierarchical Bayesian optimisation framework to navigate the relationship between chemical identity, physical properties, and process performance. %For a fixed set of operating conditions u∈Uu \in \mathcal{U}, the evaluation procedure is defined as η=T(M(c),u)\eta = \mathcal{T}(\mathcal{M}(c), u), where M\mathcal{M} maps a chemical cc to its property vector pp, and T\mathcal{T} represents the process model. 
+
+The architecture operates via a nested optimisation loop:
+\begin{enumerate}
+    \item \textbf{Outer Loop (Fluid Selection):} Operates over the property space $\mathcal{P}$ and chemical space $\mathcal{C}$. It uses four primary GP surrogates to select the next fluid $c_{T+1}$ by maximising a constrained acquisition, in which we weight the Expected Improvement by the respective probabilities:
+    \begin{equation}
+    \label{eq:constrained_acq}
+    p^{\star} = \arg\max_{p \in \mathcal{P}} \underbrace{P_{\text{valid}}(p)}_{\mathrm{GPC2}} \cdot \underbrace{P_{\text{reach}}(p)}_{\mathrm{GPC1}} \cdot \underbrace{\mathrm{EI}(p)}_{\mathrm{GPR2}}
+    \end{equation}
+
+    Once $p^{\star}$ is identified, the targeting stage realises it as a chemical $c$.
+        
+    \item \textbf{Inner Loop (Operating Condition Optimisation):} For a candidate fluid identified by the outer loop, the system must determine optimal performance $\eta^*$. We implement a separate, sub-region constrained optimisation over the operating conditions $u \in \mathcal{U}(c)$. The resulting performance $\eta$, along with the validity outcomes, is used to update the continuous efficiency surrogate (GPR2) and the validity classifier (GPC2) for the next iteration. The chemical mapping surrogates remain fixed during this sequential loop.
+\end{enumerate}
+
+
+\subsection{Space-Filling Initialization}
+Gaussian Process surrogates require an initial dataset to condition their priors. In the absence of prior knowledge regarding the property map $\mathcal{M}$ or the process model $\mathcal{T}$, the initial chemicals should cover the chemical space as uniformly as possible to prevent localised bias.
+
+We adapt the initialisation procedure slightly depending on whether the framework is operating in pure-fluid or mixture mode. For pure fluids, we generate an initial set of $n_{\text{init}}$ candidates using Latin Hypercube Sampling (LHS) over the relaxed simplex $\Delta^{n_c-1}$. LHS provides a low-discrepancy covering of the domain that is superior to independent uniform sampling. However, because these LHS points typically lie in the interior of the simplex and do not correspond to available pure chemicals, we project each sampled point $c$ to its nearest admissible vertex $e_{i^\star}$ in $\mathcal{C}_{\text{pure}}$:
+
+
+$$c \longmapsto e_{i^\star}, \quad \text{where} \quad i^\star = \arg\min_{i} \lVert c - e_i \rVert_2 = \arg\max_i c_i$$
+
+
+To ensure the diversity of the initial set, we remove any duplicate vertices resulting from this projection and take the nearest unevaluated vertex until $n_{\text{init}}$ unique pure chemicals are identified.
+
+Conversely, when optimising binary mixtures, the initial LHS points are drawn over the unit hypercube $[0,1]^{n_c}$. Rather than snapping to a single vertex, these sampled points are projected onto the edges of the simplex, representing valid binary mixtures. Duplicates are similarly resolved to ensure a diverse initial set of $n_{\text{init}}$ unique mixtures.
+
+Once the initial candidates $\{c_1, \dots, c_{n_{\text{init}}}\}$—whether pure fluids or binary mixtures—are selected, we evaluate the property map $\mathcal{M}$ for each to form the initial chemical-property dataset $\mathcal{D}_{cp} = \{ (c_i, \mathcal{M}(c_i)) \}_{i=1}^{n_{\text{init}}}$, where $p_i = \mathcal{M}(c_i)$. As noted previously, evaluating the physical properties $\mathcal{M}$ is computationally inexpensive ($\phi_\mathcal{M} \ll \phi_\mathcal{T}$) compared to the full process simulation $\mathcal{T}$. This cost asymmetry allows us to effectively initialise the targeting surrogate ($\mathrm{GPR1}$) and the reachability classifier ($\mathrm{GPC1}$) over a diverse subset of the design space before executing the first expensive process evaluation.
+
+
+\hl{talk about space filling and include diagram showing how the spaces interact. pure fluid: $||c||_{1}=1$}
+
+
+\subsection{Targeting Surrogate (GPR1)}
+\label{sec:targeting}
+
+The targeting stage identifies chemicals likely to match a desired property vector $p^\star \in \mathcal{P}$. To achieve this, we adopt a composite Bayesian Optimisation formulation. We first construct a multi-output Gaussian Process surrogate to model the underlying physical mapping between the chemical and property spaces, denoted as $\mathrm{GPR1}: \mathcal{C} \rightarrow \mathcal{P}$, trained on the set of previously evaluated tuples $\mathcal{D}_{cp} = \{ (c_i, \mathcal{M}(c_i)) \}_{i=1}^T$.
+
+To quantify the proximity of a candidate chemical to the target—without violating the smooth, unconstrained prior assumptions of the Gaussian Process—we apply the Euclidean ($\ell_2$) distance directly to the surrogate's predicted posterior distribution. Let $d^\star = \min_{i \le T} \lVert \mathcal{M}(c_i) - p^\star \rVert_2$ be the minimum distance achieved by currently measured chemicals. The next chemical to evaluate is selected by maximising the Expected Improvement of this composite function (EI-CF):
+
+$$c_{T+1} = \arg\max_{c \in \mathcal{C}} \mathbb{E}_{p(c) \sim \mathrm{GPR1}(c)}\!\left[\big(d^\star - \lVert p(c) - p^\star \rVert_2 \big)^+\right]$$
+
+Because the $\ell_2$ norm of a Gaussian vector yields a distribution lacking a closed-form analytic expression for Expected Improvement, the expectation in the acquisition function is estimated via Monte-Carlo sampling.
+
+For the acquisition optimisation, we employ gradient-based methods over a continuous simplex relaxation $\Delta^{n_c-1}$. The resulting continuous optimum is then projected onto the nearest unmeasured vertex (for pure fluids) or edge (for binary mixtures). This inverse targeting process repeats until the target is realised within a tolerance $r$ or the measurement budget is exhausted.
+
+\subsection{Reachability Classifier (GPC1)}
+\label{sec:reachability}
+
+Because the chemical library is finite, not all points in the property space $\mathcal{P}$ are chemically realisable. To account for this, the reachability classifier $\mathrm{GPC1}: \mathcal{P} \rightarrow [0, 1]$ estimates the probability that a target $p^*$ can be successfully realised by a real chemical. 
+
+GPC1 is trained on labels $\mathcal{D}_{\text{reach}} = \{ (p_i, z_i) \}$, where $z_i = 1$ if the targeting procedure (Section~\ref{sec:targeting}) identifies a chemical within tolerance $r$, and $z_i = 0$ otherwise. We also include all empirically measured properties as positive examples.
+
+\subsection{Efficiency Regressor (GPR2)}
+\label{sec:efficiency}
+
+The efficiency regressor $\mathcal{GPR}_2: \mathcal{P} \rightarrow \mathbb{R}$ models process performance directly over the property space. It is trained on the data $\mathcal{D}_{p\eta} = \{ (p_i, \eta_i) \}_{i=1}^T$ with valid thermodynamic outcomes, where $\eta_i = \mathcal{T}(p_i, u)$ is the performance of a realised chemical. For any $p$, GPR2 provides a Gaussian posterior from which we calculate the Expected Improvement over the current best valid performance $\eta^*$:
+\begin{equation}
+\mathrm{EI}(p) = \mathbb{E}_{\eta(p) \sim \mathrm{GPR2}(p)}\!\left[\big(\eta(p) - \eta^* \big)^+\right]
+\end{equation}
+
+\subsection{Validity Classifier (GPC2)}
+\label{sec:validity}
+
+A realisable chemical may still fail to yield an admissible system due to thermodynamic constraints (e.g., pressure-bound violations or pinch point failures). In such cases, $\mathcal{T}$ returns no valid performance. We model this via the validity classifier $\mathrm{GPC2}: \mathcal{P} \rightarrow [0, 1]$, trained on $\mathcal{D}_{\text{val}} = \{ (p_i, w_i) \}$, where $w_i = 1$ if the chemical realised at $p_i$ produced a valid performance $\eta$, and $w_i = 0$ otherwise. 
+
+The probability of process validity, $P_{\text{valid}}(p)$, is calculated using a latent GP similar to Section~\ref{sec:reachability}. Unlike GPC1, labels for GPC2 are "expensive" as they require a full process simulation. This term steers exploration away from regions where chemicals exist but fail to satisfy process-wide constraints.
+
+\subsection{Nested Operating Condition Optimization (SCBO)}
+\label{sec:sysopt}
+
+Unlike the persistent outer-loop surrogates, optimisation of operating conditions $u = \{ p_\text{evap}, p_\text{cond}\}$ is handled by a transient Sub-region Constrained Bayesian Optimisation (SCBO) routine. For every fluid evaluation suggested by the outer loop, a fresh ensemble of four local GPs is constructed over the 2-D pressure space:
+\begin{itemize}
+    \item Objective GP: Models $\eta$ as a function of $u$.
+    \item Constraint GPs (x3): Models feasibility boundaries for pressure ordering ($p_\text{cond} > p_\text{evap}$), source pinch margin and sink pinch margin.
+\end{itemize}
+This inner loop iterates using Constrained Max Posterior Sampling (a variant on Thompson Sampling) within a trust region to find the optimal operating point ($u^*, \eta^*$). We output the final optimised performance $\eta^*$ and the validity outcome to update GPR2 and GPC2, to remove operating conditions as a confounding factor in the outer objective.
+
+\section{Organic Rankine Cycle Case Study}
+\label{sec:ORC}
+
+A simulated ORC process was adapted from \citet{chys2012potential} as a case study to elucidate the performance benefits of the proposed scheme. All thermodynamic cycle simulations were evaluated using the NIST REFPROP \cite{LEMMON-RP10}, whilst CoolProp \citep{bell2014pure} was utilised for initialising pure candidates.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=1\textwidth]{Figures/ORC.pdf}
+\caption{ORC process flow.}\label{ORCdiag}
+\end{figure}
+
+The ORC, shown in \autoref{ORCdiag}, expands a saturated vapour to generate electricity using a gas turbine. The working fluid is then condensed and compressed by using a pump. Finally, the cycle is completed by an evaporator, which brings the fluid back to a saturated vapour state. The equations that describe this cycle are detailed next.
+
+The evaporator duty $\dot{Q}_{evap}$ [kW] is defined as the change in thermal energy between evaporator outlet and inlet. By energy balance, this is equivalent to the energy absorbed from the evaporator heat source, i.e.:
+
+\begin{equation}
+\label{evap}
+\dot{Q}_{evap} = \dot{m} (h^{in}_{evap}-h^{out}_{evap}) = \dot{m}_{src}(h^{in}_{src}-h^{out}_{src}),
+\end{equation}
+
+where $\dot{m}$ and $\dot{m}_{src}$ [kg/s] denote, respectively, the mass flowrates of the ORC working fluid and the evaporator heat source. $h^{in/out}_{evap/src}$ [J/g] denotes the inlet and outlet enthalpies of the evaporator working fluid and heat source.
+
+The overall ORC cycle efficiency $\eta_{cycle}$ [-] is defined as the ratio of work produced by the ORC generator $\dot{W}_{gen}$ [kW], discounted for the pump work $\dot{W}_{pump}$ [kW], to the energy inputted into the system by the evaporator heat source $\dot{Q}_{evap}$ [kW]. 
+
+\begin{equation}
+\label{cycle}
+\eta_{cycle} =\frac{\dot{W}_{gen}-\dot{W}_{pump}}{\dot{Q}_{evap}}. 
+\end{equation}
+
+The generator work is linearly parametrized using a generator efficiency $\eta_{gen}$ [-] with respect to the turbine work $\dot{W}_{turb}$ [kW]:
+
+\begin{equation}
+\label{generator}
+\dot{W}_{gen} =\eta_{gen}\dot{W}_{turb}.
+\end{equation}
+
+The turbine work is defined as the thermal energy difference between turbine inlet and outlet:
+
+\begin{equation}
+\label{turbine}
+\dot{W}_{turb} = \dot{m} (h^{in}_{turb}-h^{out}_{turb}),
+\end{equation}
+
+where $h^{in/out}_{turb}$ [J/g] denote the inlet and outlet turbine enthalpies. The latter is calculated using an isentropic efficiency $\eta_{turb}$ [-]:
+
+\begin{equation}
+\label{turbine_out}
+h^{out}_{turb} = h^{in}_{turb}-\eta_{turb} (h^{in}_{turb}-\overline{h}^{out}_{turb}),
+\end{equation}
+
+where $\overline{h}^{out}_{turb}$ [J/g] denotes the isentropic expansion turbine outlet enthalpy.
+
+Similarly, the pump work is defined as the thermal energy difference between pump inlet and outlet:
+
+\begin{equation}
+\label{pump}
+\dot{W}_{pump} = \dot{m} (h^{in}_{pump}-h^{out}_{pump}),
+\end{equation}
+
+where $h^{in/out}_{pump}$ [J/g] denote the inlet and outlet turbine enthalpies. The latter is again calculated using an isentropic efficiency $\eta_{pump}$ [-]:
+
+\begin{equation}
+\label{pump_out}
+h^{out}_{pump} = h^{in}_{pump}- \frac{h^{in}_{pump}-\overline{h}^{out}_{pump}}{\eta_{pump}},
+\end{equation}
+
+where $\overline{h}^{out}_{pump}$ [J/g] denotes the isentropic expansion pump outlet enthalpy.
+
+As with the evaporator, energy is balanced in the condenser as follows:
+
+\begin{equation}
+\label{conservation}
+\dot{m} (h^{in}_{cond}-h^{out}_{cond}) = \dot{m}_{snk}(h^{out}_{snk}-h^{in}_{snk}),
+\end{equation}
+
+where $\dot{m}_{snk}$ [kg/s] denotes the heat sink fluid flowrate.
+
+\section{Results}
+\label{sec:results}
+
+We compared four configurations - the one-stage and two-stage Bayesian-optimisation pipelines applied to pure working fluids and to binary mixtures - on the task of maximising ORC thermal efficiency $\eta$. We set a fixed heat source ($150^{\circ}\text{C}$, cooled to $135^{\circ}\text{C}$) and sink ($25^{\circ}\text{C}$, warmed to $35^{\circ}\text{C}$). We drew candidate fluids from a database of 61 species; as mentioned before, mixtures were binary combinations  with a continuous mole fraction. We ran each configuration on 20 independent seeds in order to drive comparable initialisations across configurations.
+
+The two pipelines were budgeted on the common "resource", the SCBO evaluation: for one candidate fluid, a full constrained trust-region (TuRBO) optimisation of the two operating pressures $(p_\mathrm{evap}, p_\mathrm{cond})$ subject to the pinch and pressure-ordering constraints, returning that fluid's best feasible efficiency. This is the dominant cost, calling the REFPROP equation of state many times per iteration; every other component (property lookups, GP fits) is cheaper by two to three orders of magnitude. The one-stage pipeline used exactly 25 such evaluations per run (5 Latin-hypercube initial designs + 20 acquisition iterations). The two-stage pipeline used $22$–$24$ on average (a realisation phase of $\approx 7$–$8$ evaluations followed by a constrained-EI exploitation phase capped at 20 and terminated early after three consecutive infeasible proposals). The budgets are therefore closely matched, and if anything favour the one-stage pipeline. The two-stage pipeline features a low-cost, property-space screening phase that evaluates only the critical point $(T_c, P_c)$ of tens of candidate fluids without running full cycle simulations. This screening efficiently focuses the expensive computational budget and, by design, is not charged against the main SCBO budget.
+
+Performance is reported as the best-of-run efficiency (the maximum $\eta$ over all evaluations in a run; infeasible designs carry a fixed penalty). Across the 20 seeds we report the mean, standard deviation, single best, and a 95 \% confidence interval obtained from a 10,000-resample percentile bootstrap of the mean. Configurations are compared with paired Wilcoxon signed-rank tests.
+
+
+\subsection{Pure Fluids}
+\label{PF}
+
+\hl{Section for Nathan and Gabriel}
+
+For pure fluids, targeting degrades to random selection due to one-hot encoding. However, this perfectly highlights why the method is necessary for mixtures. 
+
+ablation study: monte-carlo screen as opposed to using GPC1.
+
+pinch constraint set $\Delta T_{min} = 0$
+
+
+\subsection{Fluid Mixtures}
+\label{Mix}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Limitations: lack of vapour-quality constraint for wet fluids that would be incompatible with real turbines
+
+\hl{Section for Gabriel}
+
+\section*{Acknowledgments}
+The authors gratefully acknowledge funding from...
+
+%%Bibliography
+
+\nocite{*}   % Temporary placeholder. Comment out after bib file is populated and \cite commands issued
+\bibliographystyle{elsarticle-num-names}
+\bibliography{citations} %%% DON’T ADD EXTENSION OF FILE
+
+%% Nomenclature
+
+\pagebreak
+\makenomenclature
+
+%% This will add the subgroups
+%----------------------------------------------
+
+\renewcommand\nomgroup[1]{%
+  \item[\bfseries
+  \ifstrequal{#1}{A}{}{%
+  \ifstrequal{#1}{B}{Abbreviations}{%
+  \ifstrequal{#1}{C}{Greek variables}{%
+  \ifstrequal{#1}{D}{Latin variables}{%
+  \ifstrequal{#1}{E}{Script variables}{%
+  \ifstrequal{#1}{F}{Subscripts}{%
+  \ifstrequal{#1}{G}{Superscripts}{}}}}}}}%
+]}
+%----------------------------------------------
+
+%% This will add the units
+%----------------------------------------------
+\newcommand{\nomunit}[1]{%
+\renewcommand{\nomentryend}{\hspace*{\fill}#1}}
+%----------------------------------------------
+\renewcommand{\nompreamble}{\begin{multicols}{2}}
+\renewcommand{\nompostamble}{\end{multicols}}
+
+% --- Abbreviations (Prefix: A) ---
+\nomenclature[A]{\textbf{BO}}{Bayesian Optimisation}
+\nomenclature[A]{\textbf{EI}}{Expected Improvement}
+\nomenclature[A]{\textbf{EI-CF}}{Expected Improvement of the Composite Function}
+\nomenclature[A]{\textbf{GP}}{Gaussian Process}
+\nomenclature[A]{\textbf{GPC}}{Gaussian Process Classifier}
+\nomenclature[A]{\textbf{GPR}}{Gaussian Process Regressor}
+\nomenclature[A]{\textbf{LHS}}{Latin Hypercube Sampling}
+\nomenclature[A]{\textbf{ORC}}{Organic Rankine Cycle}
+
+% --- Roman Symbols (Prefix: R) ---
+\nomenclature[R]{$c$}{Chemical candidate vector (composition or one-hot identifier)}
+\nomenclature[R]{$d$}{Distance metric ($\ell_2$ norm) between target and realised properties}
+\nomenclature[R]{$e_i$}{Unit vector representing the $i$-th pure chemical in the library}
+\nomenclature[R]{$n_c$}{Number of pure components in the chemical library}
+\nomenclature[R]{$n_{\text{init}}$}{Number of initial samples generated prior to the optimisation loop}
+\nomenclature[R]{$p$}{Continuous property vector (e.g., $T_c, P_c$)}
+\nomenclature[R]{$p^\star$}{Target property vector proposed by the acquisition function}
+\nomenclature[R]{$q$}{Vapour quality}
+\nomenclature[R]{$r$}{Proximity tolerance for the chemical targeting stage}
+\nomenclature[R]{$u$}{Continuous vector of thermodynamic operating conditions (e.g., pressures, superheat)}
+\nomenclature[R]{$z$}{Binary flag indicating physical reachability/targeting success}
+
+% --- Greek Symbols (Prefix: G) ---
+\nomenclature[G]{$\Delta^{n_c-1}$}{Continuous simplex relaxation of the chemical composition space}
+\nomenclature[G]{$\eta$}{Thermodynamic cycle performance/efficiency}
+\nomenclature[G]{$\phi_\mathcal{M}$}{Computational cost of a static property evaluation}
+\nomenclature[G]{$\phi_\mathcal{T}$}{Computational cost of a full thermodynamic cycle simulation}
+
+% --- Sets and Spaces (Prefix: S) ---
+\nomenclature[S]{$\mathcal{C}$}{Chemical design space (pure fluids and mixtures)}
+\nomenclature[S]{$\mathcal{D}_{cp}$}{Dataset mapping chemical candidates to their realised physical properties}
+\nomenclature[S]{$\mathcal{M}$}{Property mapping function ($\mathcal{C} \to \mathcal{P}$)}
+\nomenclature[S]{$\mathcal{P}$}{Continuous physical property space}
+\nomenclature[S]{$\tilde{\mathcal{P}}$}{Discrete set of physical properties evaluated from realised chemical candidates}
+\nomenclature[S]{$\mathcal{T}$}{Thermodynamic cycle simulation function ($\mathcal{P} \times \mathcal{U} \to \eta$)}
+\nomenclature[S]{$\mathcal{U}$}{Space of cycle operating conditions}
+
+% --- Models (Prefix: M) ---
+\nomenclature[M]{$\mathrm{GPC1}$}{Reachability classifier (models $P_{\text{reach}}$ for intractable spaces)}
+\nomenclature[M]{$\mathrm{GPC2}$}{Validity classifier (models $P_{\text{valid}}$ for cycle feasibility)}
+\nomenclature[M]{$\mathrm{GPR1}$}{Targeting surrogate (multi-output model of $\mathcal{M}$ for composite BO)}
+\nomenclature[M]{$\mathrm{GPR2}$}{Efficiency surrogate (continuous performance model)}
+
+\printnomenclature
+
+
+\end{document}
+
+
+

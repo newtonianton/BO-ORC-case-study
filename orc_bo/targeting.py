@@ -6,7 +6,10 @@ near desirable property targets, then optimizes operating conditions (stage 2, v
 
 * :class:`PropNormalizer` - adaptive normalization of property coordinates to ``[0, 1]``.
 * :func:`success_mask` - which targets have been *reached* (a realized fluid within a radius).
-* :func:`fit_target_gp` / :func:`run_targeting` - GP-driven search toward targets.
+* :func:`fit_property_gp` / :func:`run_targeting` - composite GP-driven search toward
+  targets: a multi-output GP models chemical space -> properties, and a Monte-Carlo
+  qLogEI of the negative L2 distance to each target drives proposals.
+* :func:`fit_target_gp` - single-output GP helper (used for the Step-8 efficiency GP).
 * :class:`ApproxGPClassifier` / :func:`train_gpc` / :func:`gpc_predict_proba` - a generic
   variational GP binary classifier. It is trained on **reachability** labels here (a target
   is reachable by some realizable mixture) and reused for **validity** labels in the Step-8
@@ -26,6 +29,7 @@ if TYPE_CHECKING:  # avoid a runtime import cycle; used only for type hints
 
 import gpytorch
 from botorch.acquisition import qLogExpectedImprovement
+from botorch.acquisition.objective import GenericMCObjective
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.outcome import Standardize
@@ -134,8 +138,22 @@ def success_mask(
 
 
 def fit_target_gp(x: torch.Tensor, y: torch.Tensor) -> SingleTaskGP:
-    """Fit a standardized SingleTaskGP for the targeting objective."""
+    """Fit a standardized single-output SingleTaskGP (e.g. the Step-8 efficiency GP)."""
     model = SingleTaskGP(x, y, outcome_transform=Standardize(m=1))
+    fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
+    return model
+
+
+def fit_property_gp(x: torch.Tensor, p_norm: torch.Tensor) -> SingleTaskGP:
+    """Fit the multi-output targeting surrogate GPR1: chemical space -> normalized properties.
+
+    This is the composite-BO formulation: rather than modelling the scalar distance to one
+    target, a single multi-output GP models the property vector itself, and each target's
+    acquisition applies its own objective ``g_k(p) = -||p - p_k*||_2`` to posterior property
+    samples. One model per round serves every active target.
+    """
+    y = p_norm + 1e-8 * torch.randn_like(p_norm)  # jitter for numerical stability
+    model = SingleTaskGP(x, y, outcome_transform=Standardize(m=y.shape[-1]))
     fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
     return model
 
@@ -146,9 +164,16 @@ class ApproxGPClassifier(gpytorch.models.ApproximateGP):
     Trained on reachability labels (property-space) in stage 1, or validity labels
     (operability) in the Step-8 cEI. It models a probability, not a specific notion of
     "feasibility" — the caller decides what the labels mean.
+
+    ``prior_mean`` sets the latent constant mean. With the probit link, the far-from-data
+    class probability is ``Phi(prior_mean / sqrt(1 + s^2))``: 0.5 for the neutral default,
+    ~0.24 at -1.0. A negative prior makes unlabeled regions "negative until demonstrated"
+    (pessimistic), which suits validity/operability. When nonzero, the constant is FROZEN:
+    labels are typically majority-positive, so a learnable constant would drift back up
+    during training and silently erase the requested pessimism.
     """
 
-    def __init__(self, inducing_points: torch.Tensor) -> None:
+    def __init__(self, inducing_points: torch.Tensor, prior_mean: float = 0.0) -> None:
         variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
             inducing_points.size(0)
         )
@@ -157,6 +182,9 @@ class ApproxGPClassifier(gpytorch.models.ApproximateGP):
         )
         super().__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
+        if prior_mean != 0.0:
+            self.mean_module.initialize(constant=prior_mean)
+            self.mean_module.constant.requires_grad_(False)
         self.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.MaternKernel(nu=2.5, ard_num_dims=inducing_points.shape[-1])
         )
@@ -173,11 +201,14 @@ def train_gpc(
     steps: int = 200,
     lr: float = 0.1,
     m_inducing: int = 128,
+    prior_mean: float = 0.0,
 ) -> Tuple[ApproxGPClassifier, gpytorch.likelihoods.BernoulliLikelihood]:
     """Train the variational GP binary classifier on ``y_cls`` labels.
 
     Labels are caller-defined: reachability (target reached) in stage 1, or validity
-    (feasible operating point exists) in the Step-8 cEI.
+    (feasible operating point exists) in the Step-8 cEI. ``prior_mean`` < 0 trains a
+    pessimistic classifier whose far-from-data probability sits below 0.5 (see
+    :class:`ApproxGPClassifier`); use it for validity, not reachability.
     """
     y_flat = y_cls.reshape(-1)
     n_inducing = min(m_inducing, max(32, x_cls.shape[0] // 2))
@@ -185,7 +216,7 @@ def train_gpc(
         n_inducing
     ).to(**TKWARGS)
 
-    model = ApproxGPClassifier(inducing_points=inducing).to(**TKWARGS)
+    model = ApproxGPClassifier(inducing_points=inducing, prior_mean=prior_mean).to(**TKWARGS)
     likelihood = gpytorch.likelihoods.BernoulliLikelihood().to(**TKWARGS)
     model.train()
     likelihood.train()
@@ -254,13 +285,15 @@ def run_targeting(
     budget_per_target: int = 2,
     mode: str = "mixture",
 ) -> Tuple[List[MixtureKey], torch.Tensor, set[MixtureKey], List[dict]]:
-    """Drive fluid proposals toward each property target via GP + qLogEI.
+    """Drive fluid proposals toward each property target via composite MC qLogEI.
 
-    For every still-unsatisfied target, fit a GP of (negative distance to target) over the
-    one-hot space, propose a new selection by maximizing qLogEI, snap it (a pure vertex when
-    ``mode == "pure"``, otherwise a binary mixture edge), compute its properties, and append
-    it. Returns updated metadata, the property tensor, the evaluated set, and per-target
-    success records. Plotting from the original is intentionally omitted.
+    Each round fits one multi-output GP (:func:`fit_property_gp`) of chemical space ->
+    normalized properties. For every still-unsatisfied target, the qLogEI of the composite
+    objective ``-||p - p*||_2`` (estimated by Monte-Carlo over posterior property samples)
+    is maximized with gradient-based ``optimize_acqf`` over the relaxed one-hot space; the
+    optimum is snapped (a pure vertex when ``mode == "pure"``, otherwise a binary mixture
+    edge), screened for its properties, and appended. Returns updated metadata, the property
+    tensor, the evaluated set, and per-target success records.
     """
     if targets_real.numel() == 0:
         normalizer.maybe_expand(p_real)
@@ -295,13 +328,24 @@ def run_targeting(
         p_norm = normalizer.to_norm(p_real, clip=False)
         targets_norm = normalizer.to_norm(targets_real, clip=False)
 
+        # Composite acquisition: GPR1 (chemical space -> properties) is fit once per round;
+        # each target k applies its own MC objective g_k(p) = -||p - p_k*||_2 to posterior
+        # property samples inside qLogEI, maximized with gradient-based optimize_acqf. After
+        # snapping, pure mode degrades toward (near-random) novel-vertex selection - the
+        # one-hot equidistance leaves little structure - but the composite form is what makes
+        # the continuous mixture space searchable, so both modes share it.
+        model = fit_property_gp(x_train, p_norm)
         proposed: Dict[int, MixtureKey] = {}
         claimed: set[MixtureKey] = set()
         for k in active:
-            yk = (-torch.norm(p_norm - targets_norm[k].unsqueeze(0), dim=-1)).unsqueeze(-1)
-            yk = yk + 1e-8 * torch.randn_like(yk)
-            model_k = fit_target_gp(x_train, yk)
-            acqf = qLogExpectedImprovement(model=model_k, best_f=yk.max(), sampler=sampler)
+            target_k = targets_norm[k]
+            best_f = -torch.norm(p_norm - target_k.unsqueeze(0), dim=-1).min()
+            objective = GenericMCObjective(
+                lambda samples, X=None, t=target_k: -torch.norm(samples - t, dim=-1)
+            )
+            acqf = qLogExpectedImprovement(
+                model=model, best_f=best_f, sampler=sampler, objective=objective
+            )
             x_cand, _ = optimize_acqf(
                 acq_function=acqf, bounds=bounds, q=1,
                 num_restarts=min(config.bo.num_restarts, 2 * t_dim),
@@ -325,10 +369,17 @@ def run_targeting(
             evaluated_mixtures.add((j1, j2, x1))
             f1 = fluids[j1]
             f2 = fluids[j2] if j2 is not None else None
-            tc, pc = thermo.critical_properties(
-                f1.name, f2.name if f2 else None, x1, config.thermo,
-                refprop1=f1.refprop, refprop2=f2.refprop if f2 else None,
-            )
+            try:
+                tc, pc = thermo.critical_properties(
+                    f1.name, f2.name if f2 else None, x1, config.thermo,
+                    refprop1=f1.refprop, refprop2=f2.refprop if f2 else None,
+                )
+            except thermo.ThermoError as exc:
+                # No mixing-rule fallback: an unevaluable pair is unrealizable and skipped.
+                # The attempt still cost one lab-scale screen (already counted).
+                logger.warning("Targeting screen failed for %s: %s",
+                               format_mixture_name(f1.name, f2.name if f2 else None, x1), exc)
+                continue
             if not np.isfinite(tc) or not np.isfinite(pc):
                 logger.warning("Targeting: invalid properties for %s",
                                format_mixture_name(f1.name, f2.name if f2 else None, x1))

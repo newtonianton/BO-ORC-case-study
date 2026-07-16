@@ -9,3 +9,26 @@
 # ---- evaluated fluids ----
 n-Dodecane
 Toluene
+D4
+R245ca
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene
+EthylBenzene

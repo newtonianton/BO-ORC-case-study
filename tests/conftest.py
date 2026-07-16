@@ -2,7 +2,7 @@
 
 Tests marked ``@pytest.mark.refprop`` are automatically skipped when the REFPROP backend
 cannot be loaded (e.g. on machines without a REFPROP license), so the math-critical
-HEOS/geometry/mixing-rule tests still run everywhere.
+HEOS/geometry tests still run everywhere.
 """
 from __future__ import annotations
 

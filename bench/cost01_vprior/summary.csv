@@ -1,0 +1,2 @@
+config,n_seeds,mean_best_eta,std_best_eta,ci_low,ci_high,max_best_eta
+twostage_mixture,20,0.123711,0.007974,0.120281,0.127061,0.142166

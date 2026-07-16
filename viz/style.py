@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 
 # Default locations. DATA_ROOT can be overridden with the ORC_BO_BENCH environment variable
 # so a renamed results tree does not need a code edit.
-DATA_ROOT = Path(os.environ.get("ORC_BO_BENCH", REPO_ROOT / "bench" / "full2"))
+DATA_ROOT = Path(os.environ.get("ORC_BO_BENCH", REPO_ROOT / "bench" / "full3"))
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 
 # ---- Palette (validated reference instance) -------------------------------------------

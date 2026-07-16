@@ -1,0 +1,34 @@
+# ORC-BO run parameters (these must match across seeds before pooling results)
+# run: stage=twostage mode=pure backend=REFPROP seed=14 n_init=5 scbo_budget=20
+# dataset: C:\Users\natha\OneDrive - Imperial College London\third year\UROP\Calvin\orc_bo\data\Joback_Refrigerants.csv
+# [orc] t_in_source_c=150.0 t_out_source_c=135.0 t_in_sink_c=25.0 t_out_sink_c=35.0 mfr_source=15.0 pump_eff=0.8 turbine_eff=0.65 generator_eff=0.97 source_pressure_pa=500000.0 sink_pressure_pa=400000.0 eta_max=0.35 infeasible_penalty=-0.05 infeasible_pinch=500.0
+# [bo] scbo_dim=2 batch_size=4 scbo_n_init=10 n_candidates=5000 tr_length_init=0.8 tr_length_min=0.015625 tr_length_max=1.6 success_tolerance=3 mc_samples=512 num_restarts=10 raw_samples=512 scbo_max_retries=4 gp_noise=1e-05 gp_max_noise=1.0
+# [mixture] min_mole_frac=0.05 composition_threshold=0.01
+# [twostage] n_property_targets=8 required_valid_init=5 target_budget=3 radius_norm=0.15 gpc_feasibility_threshold=0.5 gpc_candidates=20000 gpc_max_rounds=4 gpc_steps=200 gpc_lr=0.1 system_budget=3 failure_allowance=0 use_tc_band=False tc_min_k=None tc_max_k=None
+# [thermo] backend=REFPROP allow_mixing_rule_fallback=True
+# ---- evaluated fluids ----
+R21
+n-Undecane
+trans-2-Butene
+MethylLinoleate
+Ethanol
+EthyleneOxide
+Toluene
+Cyclopentane
+R40
+SulfurDioxide
+Novec649
+o-Xylene
+MethylOleate
+MethylLinolenate
+MethylPalmitate
+MD4M
+n-Hexane
+MD3M
+R11
+R141b
+EthylBenzene
+R142b
+R113
+p-Xylene
+DiethylEther

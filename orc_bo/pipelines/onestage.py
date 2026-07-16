@@ -30,7 +30,7 @@ from ..geometry import (
     MixtureKey,
     mixture_key_canonical,
     snap_to_mixture,
-    snap_to_vertex,
+    snap_to_vertex_novel,
 )
 from ..logging_setup import get_logger
 from ..orc_model import ORCSimulator
@@ -69,9 +69,15 @@ def _select(
     evaluated_mixtures: Set[MixtureKey],
     composition_threshold: float,
 ) -> tuple[int, Optional[int], float]:
-    """Snap a continuous suggestion to a (j1, j2, x1) selection for the given mode."""
+    """Snap a continuous suggestion to a (j1, j2, x1) selection for the given mode.
+
+    Pure mode uses :func:`snap_to_vertex_novel` (not the novelty-free ``snap_to_vertex``): the
+    qLogEI loop is exploitative and, without a novelty guard, would repeatedly snap back to the
+    incumbent vertex and re-evaluate the same handful of fluids. Snapping to the nearest
+    *unevaluated* vertex forces the loop to explore distinct fluids.
+    """
     if mode == "pure":
-        return snap_to_vertex(x_suggest, onehot), None, 1.0
+        return snap_to_vertex_novel(x_suggest, onehot, evaluated_mixtures), None, 1.0
     return snap_to_mixture(x_suggest, onehot, evaluated_mixtures,
                            composition_threshold=composition_threshold)
 
@@ -79,7 +85,7 @@ def _select(
 def run_onestage(
     csv_path: Path,
     mode: str = "mixture",
-    n_init: int = 3,
+    n_init: int = 5,
     scbo_budget: int = 4,
     outdir: Path = Path("runs/onestage"),
     config: Optional[AppConfig] = None,
@@ -107,6 +113,14 @@ def run_onestage(
         Best fluid/mixture, its efficiency, and the evaluation sequence.
     """
     config = config or AppConfig()
+    if config.bo.cost_budget is not None:
+        # Cost-weighted budget: an evaluated fluid's property screen is bundled into its SCBO
+        # cost (1.0), but a proposal whose realization FAILS (e.g. a REFPROP-unevaluable
+        # mixture pair) is charged the standalone screen cost (lab_cost) without consuming an
+        # SCBO slot — mirroring two-stage's failed-screen accounting. The OPT loop below runs
+        # until another SCBO evaluation no longer fits inside the budget, so realization
+        # failures do not silently shrink the spend.
+        scbo_budget = max(0, int(round(config.bo.cost_budget)) - n_init)
     threshold = config.mixture.composition_threshold
     seed = base_seed()
     subdir = Path(outdir) / f"seed_{seed:03d}"
@@ -144,6 +158,8 @@ def run_onestage(
             evaluated_mixtures.add(mixture_key_canonical(j1, j2, x1))
             cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
             if cand is None:
+                if config.bo.cost_budget is not None:
+                    writer.add_cost(config.bo.lab_cost)  # failed screen still costs
                 continue
             order += 1
             evaluate_and_record(writer, PHASE_INIT, order, cand)
@@ -157,7 +173,19 @@ def run_onestage(
         # ---- qEI BO loop in one-hot space ----
         sampler = SobolQMCNormalSampler(sample_shape=torch.Size([config.bo.mc_samples]))
         bounds = torch.stack([torch.zeros(t_dim, **TKWARGS), torch.ones(t_dim, **TKWARGS)])
-        for iteration in range(1, max(0, scbo_budget) + 1):
+        iteration = 0
+        attempts = 0
+        # Safety valve: bounds the number of failed-realization retries so the loop cannot
+        # spin when (almost) nothing realizable remains.
+        max_attempts = 4 * max(1, scbo_budget)
+        while attempts < max_attempts:
+            if config.bo.cost_budget is not None:
+                # Cost-based stop: run until another SCBO evaluation (1.0) no longer fits.
+                if writer.cost + 1.0 > config.bo.cost_budget + 1e-9:
+                    break
+            elif iteration >= max(0, scbo_budget):
+                break
+            attempts += 1
             gp = SingleTaskGP(x_train, y_train, outcome_transform=Standardize(m=1))
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
             acqf = qLogExpectedImprovement(model=gp, best_f=y_train.max(), sampler=sampler)
@@ -172,11 +200,19 @@ def run_onestage(
             evaluated_mixtures.add(mixture_key_canonical(j1, j2, x1))
             cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
             if cand is None:
+                if config.bo.cost_budget is not None:
+                    writer.add_cost(config.bo.lab_cost)  # failed screen still costs
                 continue
+            iteration += 1
             order += 1
             evaluate_and_record(writer, PHASE_OPT, iteration, cand)
             x_train = torch.cat([x_train, cand.x_onehot.unsqueeze(0)], dim=0)
             y_train = torch.cat([y_train, torch.tensor([[y_train_vals[-1]]], **TKWARGS)], dim=0)
+
+        # True total spend (the cost column cannot show trailing failed-screen charges,
+        # which add cost without writing a row).
+        writer.write_note(f"total cost spent: {writer.cost:.1f}")
+        writer.write_note(simulator.carnot_report())
 
     best_idx = int(torch.tensor(y_train_vals).argmax().item())
     result = OneStageResult(
@@ -190,4 +226,5 @@ def run_onestage(
     logger.info("One-stage complete: best %s eta=%.5f (%d evals) -> %s",
                 result.best_name, result.best_eta, result.n_evaluations, subdir)
     logger.info("Backend coverage: %s", simulator.backend_failure_report())
+    logger.info("%s", simulator.carnot_report())
     return result

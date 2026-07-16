@@ -18,15 +18,21 @@ from style import CONFIGS, FIG_DIR, MODES, STAGE_COLOR, apply_style, load_runs, 
 
 
 def _best_so_far_matrix(frames: List) -> np.ndarray:
-    """Stack seeds' best-valid-eta-so-far curves, truncated to the common length."""
+    """Stack seeds' best-valid-eta-so-far curves, forward-filled to the common max length.
+
+    Best-so-far is monotonic, so a seed that terminates early (e.g. two-stage exhausting the
+    finite pure-fluid candidate set) keeps its final value for the remaining x. This avoids one
+    short seed truncating the whole curve to its length (the previous min-length behaviour hid
+    that 17/20 two-stage-pure seeds ran the full budget).
+    """
     curves = []
     for df in frames:
         eta = df["eta"].to_numpy(dtype=float)
         curves.append(np.maximum.accumulate(np.clip(eta, 0.0, None)))
     if not curves:
         return np.empty((0, 0))
-    n = min(len(c) for c in curves)
-    return np.vstack([c[:n] for c in curves])
+    n = max(len(c) for c in curves)
+    return np.vstack([np.concatenate([c, np.full(n - len(c), c[-1])]) for c in curves])
 
 
 def main(figdir: Path = FIG_DIR) -> Path:

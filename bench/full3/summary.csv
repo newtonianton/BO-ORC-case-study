@@ -1,0 +1,5 @@
+config,n_seeds,mean_best_eta,std_best_eta,ci_low,ci_high,max_best_eta
+onestage_mixture,20,0.123976,0.008647,0.120314,0.127643,0.141714
+onestage_pure,20,0.126573,0.008417,0.122934,0.130104,0.140748
+twostage_mixture,20,0.128854,0.007898,0.125382,0.132182,0.147339
+twostage_pure,20,0.130958,0.005657,0.128427,0.133232,0.137106

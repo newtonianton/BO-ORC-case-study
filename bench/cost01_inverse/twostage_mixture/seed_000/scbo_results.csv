@@ -1,0 +1,16 @@
+phase,order,mixture,mode,comp1,comp2,x1,Tc_K,Pc_Pa,eta,p_evap_bar,p_cond_bar,cost
+INIT,1,R245ca[0.49]&MethylPalmitate[0.51],mixture,R245ca,MethylPalmitate,0.49,604.3593,2065264.451919195,-0.05,-1.0,-1.0,4.7
+INIT,2,DimethylCarbonate[0.49]&MethylLinolenate[0.51],mixture,DimethylCarbonate,MethylLinolenate,0.49,680.4200000000001,2780360.9080700013,-0.05,-1.0,-1.0,5.7
+INIT,3,m-Xylene[0.50]&o-Xylene[0.50],mixture,m-Xylene,o-Xylene,0.5,623.6783680374999,3640623.578469034,0.12201042293412465,0.7423137518580086,0.02014209383883818,6.7
+INIT,4,R114[0.07]&Neopentane[0.93],mixture,R114,Neopentane,0.07,432.69630000000006,3268204.1387213035,0.10388315872346048,21.979062596894153,2.415336993437922,7.7
+INIT,5,R114[0.47]&DimethylCarbonate[0.53],mixture,R114,DimethylCarbonate,0.47000000000000003,492.06010000000003,4693983.913290408,0.07648317963731573,9.404047101894067,1.6443375752157934,8.7
+OPT,6,MethylLinolenate[0.32]&o-Xylene[0.68],mixture,MethylLinolenate,o-Xylene,0.32,684.25612,2415903.4828360486,-0.05,-1.0,-1.0,9.7
+OPT,7,DimethylCarbonate[0.33]&MethylLinolenate[0.67],mixture,DimethylCarbonate,MethylLinolenate,0.33,719.1400000000001,2267284.285311243,-0.05,-1.0,-1.0,10.7
+OPT,8,R114[0.30]&o-Xylene[0.70],mixture,R114,o-Xylene,0.3,566.8303,3690793.629902283,-0.05,-1.0,-1.0,11.7
+OPT,9,o-Xylene[0.50]&MethylLinolenate[0.50],mixture,o-Xylene,MethylLinolenate,0.5,714.6295,2004001.3917936108,-0.05,-1.0,-1.0,12.7
+OPT,10,m-Xylene[0.50]&MethylLinolenate[0.50],mixture,m-Xylene,MethylLinolenate,0.5,707.9449999999999,1962953.9823703363,-0.05,-1.0,-1.0,13.7
+OPT,11,m-Xylene[0.20]&MethylLinolenate[0.80],mixture,m-Xylene,MethylLinolenate,0.2,762.5780000000001,1539630.1168630838,-0.05,-1.0,-1.0,15.0
+OPT,12,m-Xylene[0.05]&Water[0.95],mixture,m-Xylene,Water,0.05,645.5857,24142816.294016015,-0.05,-1.0,-1.0,16.5
+OPT,13,Neopentane[0.18]&R114[0.82],mixture,Neopentane,R114,0.18,421.51379999999995,3437807.62301809,0.08859863664165976,18.12968960934462,3.2373936307024844,17.5
+OPT,14,Water[0.29]&Neopentane[0.71],mixture,Water,Neopentane,0.29,495.61324,12240791.870024407,-0.05,-1.0,-1.0,18.5
+OPT,15,Water[0.38]&Neopentane[0.62],mixture,Water,Neopentane,0.38,514.81528,14828232.932365524,-0.05,-1.0,-1.0,19.5

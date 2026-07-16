@@ -1,4 +1,4 @@
-"""Tests for the thermodynamic property layer (HEOS pure props, mixing rules, fallback)."""
+"""Tests for the thermodynamic property layer (HEOS pure props, REFPROP-only mixtures)."""
 from __future__ import annotations
 
 import math
@@ -28,13 +28,6 @@ def test_pure_critical_properties_heos():
     assert 4.0e6 < pc < 4.1e6
 
 
-def test_mixing_rules_math():
-    # Kay's rule is linear; inverse-sum lies between the harmonic inputs.
-    assert math.isclose(thermo.kay_critical_temperature(300.0, 400.0, 0.25), 375.0)
-    pc = thermo.inverse_sum_critical_pressure(4e6, 2e6, 0.5)
-    assert math.isclose(pc, 1.0 / (0.5 / 4e6 + 0.5 / 2e6))
-
-
 def test_critical_properties_pure_passthrough():
     cfg = ThermoConfig(backend="HEOS")
     tc, pc = thermo.critical_properties("R134a", None, 1.0, cfg)
@@ -42,28 +35,19 @@ def test_critical_properties_pure_passthrough():
     assert tc == tc_ref and pc == pc_ref
 
 
-def test_mixture_fallback_uses_mixing_rules_and_counts(monkeypatch):
-    # Force the REFPROP path off so the mixing-rule fallback is exercised and counted.
-    thermo.reset_fallback_stats()
-    cfg = ThermoConfig(backend="HEOS", allow_mixing_rule_fallback=True)
-    tc, pc = thermo.critical_properties("R32", "R125", 0.5, cfg)
-
-    tc1, pc1 = thermo.pure_critical_properties("R32", "HEOS")
-    tc2, pc2 = thermo.pure_critical_properties("R125", "HEOS")
-    assert math.isclose(tc, thermo.kay_critical_temperature(tc1, tc2, 0.5))
-    assert math.isclose(pc, thermo.inverse_sum_critical_pressure(pc1, pc2, 0.5))
-    assert thermo.fallback_stats().get("refprop_unavailable", 0) >= 1
-
-
-def test_mixture_without_fallback_raises():
-    cfg = ThermoConfig(backend="HEOS", allow_mixing_rule_fallback=False)
+def test_mixture_without_refprop_raises():
+    # No mixing-rule fallback exists: mixtures on a non-REFPROP backend must raise, and
+    # the failed attempt still counts as one screening call (cost accounting).
+    thermo.reset_screen_count()
+    cfg = ThermoConfig(backend="HEOS")
     with pytest.raises(RuntimeError):
         thermo.critical_properties("R32", "R125", 0.5, cfg)
+    assert thermo.screen_count() == 1
 
 
 @pytest.mark.refprop
 def test_refprop_mixture_matches_within_tolerance():
-    cfg = ThermoConfig(backend="REFPROP", allow_mixing_rule_fallback=False)
+    cfg = ThermoConfig(backend="REFPROP")
     tc, pc = thermo.critical_properties("R32", "R125", 0.5, cfg)
     # REFPROP mixture critical point should be physically sensible.
     assert 330 < tc < 355

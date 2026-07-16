@@ -64,3 +64,31 @@ def test_gpc_learns_separable_labels():
     probe = torch.tensor([[0.9, 0.5], [0.1, 0.5]], dtype=DTYPE)
     proba = gpc_predict_proba(model, likelihood, probe)
     assert float(proba[0]) > float(proba[1])
+
+
+def test_validity_gpc_negative_prior_demotes_unknown_regions():
+    """A negative latent prior mean must lower the predicted probability in regions with
+    no labels (far-field ~0.5 -> ~0.2) while evidenced-valid regions stay clearly above
+    the far-field level. This is the pessimistic validity prior used by the Step-8 cEI."""
+    import torch
+
+    from orc_bo.targeting import gpc_predict_proba, train_gpc
+
+    torch.manual_seed(0)
+    x = torch.tensor(
+        [[0.10, 0.10], [0.15, 0.20], [0.20, 0.15], [0.80, 0.80], [0.85, 0.75]],
+        dtype=torch.double,
+    )
+    y = torch.tensor([[1.0], [1.0], [1.0], [0.0], [0.0]], dtype=torch.double)
+    far = torch.tensor([[0.05, 0.95], [0.95, 0.05]], dtype=torch.double)  # unlabeled corners
+
+    m0, l0 = train_gpc(x, y, steps=100)
+    mneg, lneg = train_gpc(x, y, steps=100, prior_mean=-1.0)
+
+    p0_far = gpc_predict_proba(m0, l0, far)
+    pneg_far = gpc_predict_proba(mneg, lneg, far)
+    assert (pneg_far < p0_far).all()  # pessimism demotes unknown regions
+    assert float(pneg_far.max()) < 0.45
+
+    pneg_valid = gpc_predict_proba(mneg, lneg, x[:3])
+    assert float(pneg_valid.mean()) > float(pneg_far.mean()) + 0.1

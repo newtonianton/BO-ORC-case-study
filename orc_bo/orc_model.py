@@ -63,6 +63,11 @@ class ORCSimulator:
         # Backend-coverage instrumentation (per fluid handed to can_evaluate).
         self.n_evaluations = 0
         self.n_backend_failures = 0
+        # Ceiling-guard instrumentation (per simulate call): how often a finite, positive
+        # efficiency exceeded min(eta_max, Carnot) and was rejected. A non-trivial rate
+        # signals numerical artifacts (e.g. isentropic-solver issues), not physics.
+        self.n_simulations = 0
+        self.n_carnot_rejections = 0
 
     @property
     def _penalty(self) -> SimulationResult:
@@ -93,6 +98,24 @@ class ORCSimulator:
         pct = (100.0 * f / n) if n else 0.0
         return f"backend could not evaluate {f}/{n} fluids ({pct:.0f}%)"
 
+    def carnot_report(self) -> str:
+        """One-line summary of how often the efficiency-ceiling (Carnot) guard fired.
+
+        Written into ``summary.txt`` after each run so per-run output records whether
+        above-ceiling efficiencies (numerical artifacts) were an issue.
+        """
+        n, r = self.n_simulations, self.n_carnot_rejections
+        pct = (100.0 * r / n) if n else 0.0
+        if r == 0:
+            verdict = "no issue"
+        elif pct < 0.1:
+            verdict = "negligible"
+        else:
+            verdict = "investigate: possible isentropic-solver artifacts"
+        ceiling = min(self.orc.eta_max, self._carnot)
+        return (f"carnot_guard: {r}/{n} simulate calls ({pct:.2f}%) exceeded the eta "
+                f"ceiling {ceiling:.4f} and were rejected ({verdict})")
+
     def simulate(self, wf: str, p_evap_bar: float, p_cond_bar: float) -> SimulationResult:
         """Simulate one ORC operating point.
 
@@ -110,6 +133,7 @@ class ORCSimulator:
             failed evaluation, returns the configured infeasibility penalty.
         """
         o = self.orc
+        self.n_simulations += 1
         p_evap = p_evap_bar * 1e5
         p_cond = p_cond_bar * 1e5
 
@@ -159,8 +183,12 @@ class ORCSimulator:
             w_gen = o.generator_eff * w_turb
             eta = (w_gen - w_pump) / q_evap
 
+            if not np.isfinite(eta) or eta < 0:
+                return self._penalty
             ceiling = min(o.eta_max, self._carnot)
-            if not np.isfinite(eta) or eta < 0 or eta > ceiling:
+            if eta > ceiling:
+                self.n_carnot_rejections += 1
+                logger.debug("eta=%.4f exceeds ceiling %.4f for %s; rejected", eta, ceiling, wf)
                 return self._penalty
 
             return SimulationResult(eta, snk_pinch, src_pinch)

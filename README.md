@@ -22,8 +22,8 @@ orc_bo/
                      thermo, paths). Loads defaults, an optional TOML file, and env overrides.
   logging_setup.py   configure_logging(); modules log via logging, never print.
   thermo.py          The ONLY module that calls CoolProp/REFPROP. Pure & mixture
-                     properties, isentropic enthalpy, with a logged + counted REFPROP ->
-                     mixing-rule fallback.
+                     properties, isentropic enthalpy. Mixtures are REFPROP-only; a pair
+                     REFPROP cannot evaluate raises and the pipelines skip it.
   geometry.py        snap_to_vertex (pure), snap_to_mixture (edge), composition snapping,
                      canonical keys.
   orc_model.py       ORCSimulator: one ORC evaluation -> (eta, sink_pinch, source_pinch),
@@ -72,9 +72,9 @@ venv/Scripts/python -m pip install -r requirements.txt        # Windows
 ```
 
 * **Pure-fluid** optimization works with the CoolProp **HEOS** backend (no extra license).
-* **Mixture** optimization is most accurate with **REFPROP** (a licensed product reachable
-  by CoolProp). Without REFPROP, mixture critical properties fall back to analytic mixing
-  rules (logged and counted), and HEOS may not support every mixture.
+* **Mixture** optimization requires **REFPROP** (a licensed product reachable by CoolProp).
+  A mixture pair REFPROP cannot evaluate raises during the property screen and the
+  pipelines skip it; there is no analytic mixing-rule fallback.
 
 Select the backend with `--backend {HEOS,REFPROP}` or the `ORC_BO_BACKEND` env variable.
 
@@ -84,7 +84,7 @@ Select the backend with `--backend {HEOS,REFPROP}` or the `ORC_BO_BACKEND` env v
 share a naming convention:
 
 * `fluid` — the display / CoolProp-**HEOS** name (e.g. `Dichloroethane`, `n-Butane`). Used
-  for labels, pure-fluid critical properties, and the mixing-rule fallback.
+  for labels and pure-fluid critical properties.
 * `REFPROP_STANDARD` — the **REFPROP** name (e.g. `R150`, `BUTANE`). Used when building the
   mixture string handed to REFPROP. If this column is blank for a row, the display name is
   reused (CoolProp resolves many display names to REFPROP fluids on its own).
@@ -162,8 +162,8 @@ constraint-feasible operating point), and **constraint feasibility** (a specific
 
 1. **Initial sampling** — draw `n_init` Latin-hypercube points in one-hot fluid space and
    snap each to a binary mixture.
-2. **Property evaluation** — compute `(Tc, Pc)` for each initial mixture (REFPROP, or the
-   mixing-rule fallback) and fit the property normalizer.
+2. **Property evaluation** — compute `(Tc, Pc)` for each initial mixture with REFPROP
+   (pairs REFPROP cannot evaluate are skipped) and fit the property normalizer.
 3. **Initial targets** — draw `n_property_targets` Latin-hypercube points as goals over the
    observed `(Tc, Pc)` range. Optionally (`use_tc_band=True`, **off by default**) restrict the
    `Tc` axis to the **operable band** `[tc_min_k or source, tc_max_k or source+200 K]`, which
@@ -235,7 +235,7 @@ radius_norm = 0.05
 python -m pytest tests/ -v
 ```
 
-The geometry, thermo (mixing rules), ORC-model (golden values), constraints, and targeting
+The geometry, thermo, ORC-model (golden values), constraints, and targeting
 tests run on any machine. Tests marked `@pytest.mark.refprop` exercise the REFPROP mixture
 path and are skipped automatically when REFPROP is unavailable — run them on a
 REFPROP-licensed machine to validate the mixture pipeline end-to-end.

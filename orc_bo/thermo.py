@@ -6,18 +6,18 @@ REFPROP-unavailable fallback behavior are configured in exactly one place.
 
 Key behaviors
 -------------
-* Pure fluids work on either backend; binary mixtures generally require REFPROP.
+* Pure fluids work on either backend; binary mixtures require REFPROP.
 * When REFPROP cannot return mixture critical properties, :func:`critical_properties`
-  optionally falls back to analytic mixing rules (Kay's rule for ``Tc``, the inverse-sum
-  rule for ``Pc``). Every fallback is **logged and counted** (see :func:`fallback_stats`)
-  rather than silently swallowed, so callers can audit how often it happened.
+  raises (no analytic mixing-rule fallback): a mixture the reference model cannot
+  describe is treated as unrealizable, and pipelines skip it. Mixtures that *screen*
+  fine but later fail cycle simulation instead receive the infeasible penalty, which
+  labels the validity classifier away from that property region.
 """
 from __future__ import annotations
 
 import os
-from collections import Counter
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import CoolProp.CoolProp as CP
@@ -54,18 +54,21 @@ _configure_refprop()
 # RuntimeError. These are the exceptions we treat as "property unavailable".
 ThermoError = (ValueError, RuntimeError)
 
-# Instrumentation: counts of REFPROP->mixing-rule fallbacks, keyed by reason.
-_FALLBACK_COUNTS: Counter = Counter()
+# Instrumentation: standalone property-screen calls (cost accounting). Every call to
+# :func:`critical_properties` is one lab-scale screening attempt, including ones whose result
+# is later rejected. Pipelines reset this at the start of Stage-1 targeting and read it after,
+# so it measures the two-stage screening count L used to charge the cost-weighted budget.
+_SCREEN_COUNT: list = [0]
 
 
-def fallback_stats() -> Dict[str, int]:
-    """Return a copy of the REFPROP->mixing-rule fallback counters."""
-    return dict(_FALLBACK_COUNTS)
+def reset_screen_count() -> None:
+    """Reset the property-screen counter (call before a targeting phase)."""
+    _SCREEN_COUNT[0] = 0
 
 
-def reset_fallback_stats() -> None:
-    """Reset the fallback counters (useful between runs or tests)."""
-    _FALLBACK_COUNTS.clear()
+def screen_count() -> int:
+    """Number of :func:`critical_properties` screening calls since the last reset."""
+    return _SCREEN_COUNT[0]
 
 
 @lru_cache(maxsize=1)
@@ -177,16 +180,6 @@ def molar_mass(fluid: str, backend: ThermoBackend = "REFPROP") -> float:
     return CP.PropsSI("molar_mass", spec)
 
 
-def kay_critical_temperature(tc1: float, tc2: float, x1: float) -> float:
-    """Kay's rule pseudo-critical temperature: ``x1*Tc1 + (1-x1)*Tc2``."""
-    return x1 * tc1 + (1.0 - x1) * tc2
-
-
-def inverse_sum_critical_pressure(pc1: float, pc2: float, x1: float) -> float:
-    """Inverse-sum mixing rule for pseudo-critical pressure: ``1 / (x1/Pc1 + x2/Pc2)``."""
-    return 1.0 / (x1 / pc1 + (1.0 - x1) / pc2)
-
-
 def critical_properties(
     fluid1: str,
     fluid2: Optional[str],
@@ -197,10 +190,11 @@ def critical_properties(
 ) -> Tuple[float, float]:
     """Return ``(Tcrit, Pcrit)`` for a pure fluid or binary mixture.
 
-    For mixtures the REFPROP equation of state is tried first; if it is unavailable or
-    fails and ``config.allow_mixing_rule_fallback`` is set, analytic mixing rules are used
-    and the event is logged and counted. With fallback disabled, the underlying error
-    propagates.
+    Mixture critical points come from the REFPROP equation of state only. If REFPROP is
+    unavailable or cannot evaluate the pair, the error **propagates** (there is no analytic
+    mixing-rule fallback): a mixture the reference model cannot describe is treated as
+    unrealizable and skipped by the pipelines. The failed attempt still counts as one
+    lab-scale screen for cost accounting.
 
     Parameters
     ----------
@@ -213,56 +207,36 @@ def critical_properties(
     config:
         Thermo configuration; defaults to :class:`ThermoConfig` defaults.
     refprop1, refprop2:
-        Optional REFPROP names for the two components. REFPROP and HEOS do not share a
-        name space, so the REFPROP equation-of-state path uses these while the mixing-rule
-        fallback keeps using the HEOS names ``fluid1``/``fluid2``. Default to
-        ``fluid1``/``fluid2`` when omitted (backward compatible).
+        Optional REFPROP names for the two components (REFPROP and HEOS do not share a
+        name space). Default to ``fluid1``/``fluid2`` when omitted.
 
     Returns
     -------
     tuple
         ``(Tcrit [K], Pcrit [Pa])``.
+
+    Raises
+    ------
+    ValueError, RuntimeError
+        When the backend cannot evaluate the fluid or mixture.
     """
     config = config or ThermoConfig()
+    _SCREEN_COUNT[0] += 1  # one lab-scale screening attempt (cost accounting)
     rp1 = refprop1 or fluid1
     rp2 = refprop2 or fluid2
 
     if fluid2 is None:
         return pure_critical_properties(rp1 if config.backend == "REFPROP" else fluid1, config.backend)
 
-    # Mixture: try the equation of state first. Use the AbstractState critical-point API
-    # (not PropsSI("Tcrit", ...), which routes through the single-fluid Props1SI path and
+    # Mixture: only the equation of state is acceptable. Use the AbstractState critical-point
+    # API (not PropsSI("Tcrit", ...), which routes through the single-fluid Props1SI path and
     # cannot parse mixture strings, spuriously failing for every mixture).
-    if config.backend == "REFPROP" and refprop_available():
-        try:
-            state = make_abstract_state(make_refprop_mixture_string(rp1, rp2, x1), "REFPROP")
-            return state.T_critical(), state.p_critical()
-        except ThermoError as exc:
-            if not config.allow_mixing_rule_fallback:
-                raise
-            # Reaching here is a genuine REFPROP failure (usually an unrecognized fluid name,
-            # e.g. D4/R40); the mixing-rule fallback below handles it. Logged at debug to avoid
-            # flooding the console for datasets with a few non-REFPROP names.
-            _FALLBACK_COUNTS["refprop_mixture_failed"] += 1
-            logger.debug(
-                "REFPROP mixture critical point failed for %s/%s x1=%.4f (%s); using mixing rules",
-                fluid1, fluid2, x1, exc,
-            )
-    elif not config.allow_mixing_rule_fallback:
+    if config.backend != "REFPROP" or not refprop_available():
         raise RuntimeError(
             f"Mixture properties for {fluid1}/{fluid2} require REFPROP, which is unavailable"
         )
-    else:
-        _FALLBACK_COUNTS["refprop_unavailable"] += 1
-
-    # Analytic mixing-rule fallback.
-    tc1, pc1 = pure_critical_properties(fluid1, "HEOS")
-    tc2, pc2 = pure_critical_properties(fluid2, "HEOS")
-    tc_mix = kay_critical_temperature(tc1, tc2, x1)
-    pc_mix = inverse_sum_critical_pressure(pc1, pc2, x1) if pc1 > 0 and pc2 > 0 else (
-        x1 * pc1 + (1.0 - x1) * pc2
-    )
-    return tc_mix, pc_mix
+    state = make_abstract_state(make_refprop_mixture_string(rp1, rp2, x1), "REFPROP")
+    return state.T_critical(), state.p_critical()
 
 
 def make_refprop_mixture_string(fluid1: str, fluid2: str, x1: float) -> str:

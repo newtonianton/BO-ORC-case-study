@@ -57,7 +57,7 @@ def _backend_name(fluid: Fluid, backend: ThermoBackend) -> str:
 
 RESULT_FIELDS = [
     "phase", "order", "mixture", "mode", "comp1", "comp2", "x1",
-    "Tc_K", "Pc_Pa", "eta", "p_evap_bar", "p_cond_bar",
+    "Tc_K", "Pc_Pa", "eta", "p_evap_bar", "p_cond_bar", "cost",
 ]
 
 
@@ -119,9 +119,10 @@ def realize_candidate(
     Pure-fluid critical properties and triple pressures are evaluated with the HEOS
     backend (equation-of-state pure properties that are available on any machine, and which
     use the display name); mixture critical properties go through
-    :func:`orc_bo.thermo.critical_properties`, which prefers REFPROP and falls back to mixing
-    rules. The working-fluid string handed to the simulator uses the backend-appropriate name
-    (REFPROP names for the REFPROP backend, display names for HEOS).
+    :func:`orc_bo.thermo.critical_properties`, which is REFPROP-only and raises when the
+    pair cannot be evaluated (caught here; the candidate is skipped). The working-fluid
+    string handed to the simulator uses the backend-appropriate name (REFPROP names for the
+    REFPROP backend, display names for HEOS).
     """
     f1 = fluids[j1]
     f2 = fluids[j2] if j2 is not None else None
@@ -199,9 +200,14 @@ class RunWriter:
     :func:`format_run_header`) is written to the top of ``summary.txt`` as ``#`` comments.
     """
 
-    def __init__(self, outdir: Path, header: Optional[str] = None) -> None:
+    def __init__(self, outdir: Path, header: Optional[str] = None,
+                 cost_offset: float = 0.0) -> None:
         outdir.mkdir(parents=True, exist_ok=True)
         self.outdir = outdir
+        # Cumulative cost (SCBO-equivalent units). ``cost_offset`` is the standalone screening
+        # cost already incurred before any SCBO row (two-stage's 0.1 * L); each recorded SCBO
+        # evaluation then adds 1.0. The ``cost`` column drives the best-eta-vs-cost figure.
+        self._cost = float(cost_offset)
         self._results = open(outdir / "scbo_results.csv", "w", newline="", encoding="utf-8")
         self._sequence = open(outdir / "sequence.csv", "w", newline="", encoding="utf-8")
         self._summary = open(outdir / "summary.txt", "w", encoding="utf-8")
@@ -213,16 +219,31 @@ class RunWriter:
             self._summary.write(header)
         self._flush()
 
+    @property
+    def cost(self) -> float:
+        """Cumulative cost so far (SCBO-equivalent units)."""
+        return self._cost
+
+    def add_cost(self, delta: float) -> None:
+        """Charge additional non-SCBO cost (e.g. inverse-design screening in Step 8)."""
+        self._cost += float(delta)
+
+    def write_note(self, text: str) -> None:
+        """Append a ``#``-prefixed diagnostic line to ``summary.txt`` (e.g. guard reports)."""
+        self._summary.write(f"# {text}\n")
+        self._summary.flush()
+
     def record(
         self, phase: str, order: int, mode: str, cand: Candidate,
         eta: float, p_evap_bar: float, p_cond_bar: float,
     ) -> None:
         """Append one evaluation result and flush to disk."""
+        self._cost += 1.0  # one SCBO evaluation
         self._results_writer.writerow({
             "phase": phase, "order": order, "mixture": cand.name, "mode": mode,
             "comp1": cand.fluid1, "comp2": cand.fluid2 or "", "x1": cand.x1,
             "Tc_K": cand.tc, "Pc_Pa": cand.pc, "eta": eta,
-            "p_evap_bar": p_evap_bar, "p_cond_bar": p_cond_bar,
+            "p_evap_bar": p_evap_bar, "p_cond_bar": p_cond_bar, "cost": round(self._cost, 4),
         })
         self._sequence_writer.writerow([order, cand.name])
         self._summary.write(cand.name + "\n")

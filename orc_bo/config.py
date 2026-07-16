@@ -9,6 +9,8 @@ Environment overrides (applied on top of file/defaults):
     ORC_BO_BACKEND       -> thermo.backend ("REFPROP" or "HEOS")
     ORC_BO_DATA_CSV      -> paths.data_csv
     ORC_BO_N_TARGETS     -> twostage.n_property_targets (pre-SCBO coverage; for sweeps)
+    ORC_BO_STEP8_PROPOSAL-> twostage.step8_proposal ("screen" or "inverse"; for the ablation)
+    ORC_BO_VALIDITY_PRIOR-> twostage.validity_prior_mean (negative = pessimistic GPC2)
     ORC_BO_REFPROP_PATH  -> REFPROP install directory (see orc_bo.thermo; default is the
                             standard Windows location C:\\Program Files (x86)\\REFPROP)
 """
@@ -87,6 +89,14 @@ class BOConfig:
     # GP fitting noise schedule.
     gp_noise: float = 1e-5
     gp_max_noise: float = 1.0
+    # Cost-weighted budget (SCBO-equivalent units). One SCBO evaluation costs 1.0; one
+    # standalone lab-scale property screen (two-stage Stage-1 targeting) costs ``lab_cost``.
+    # When set, both pipelines target this total cost instead of a fixed evaluation count:
+    # one-stage runs ``round(cost_budget)`` SCBO evaluations; two-stage measures its screening
+    # count L and runs ``round(cost_budget - lab_cost * L)`` SCBO evaluations, so both spend the
+    # same total cost. None reverts to legacy count-based budgeting.
+    cost_budget: Optional[float] = 20.0
+    lab_cost: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,22 @@ class TwoStageConfig:
     gpc_lr: float = 0.1
     # Step-8 cEI exploitation loop.
     system_budget: int = 3
+    # Latent prior mean for the VALIDITY GPC (GPC2) only; 0.0 = neutral (far-from-data
+    # probability 0.5). Negative values are pessimistic: with the probit link the far-field
+    # probability is Phi(m / sqrt(1 + s^2)) (~0.24 at -1.0), so unlabeled property regions
+    # read "inoperable until demonstrated" and the Step-8 cEI stops treating unexplored
+    # high-Tc corners as attractive. The reachability GPC keeps a neutral prior (Step-6
+    # refill thresholds at 0.5 and would stall under pessimism). Ablate via
+    # ORC_BO_VALIDITY_PRIOR.
+    validity_prior_mean: float = 0.0
+    # How Step 8 turns the cEI (EI x P_reach x P_valid) into a concrete proposal:
+    #   "screen"  - Monte-Carlo screen: sample candidates in chemical space, snap/realize
+    #               them, score the cEI at their actual (Tc, Pc), take the argmax.
+    #   "inverse" - theoretical inverse design: maximize the cEI over property space to get
+    #               a target p*, then realize p* with the Stage-1 targeting machinery
+    #               (extra screens are charged to the cost budget). Ablation pair for
+    #               "screen"; override per run with ORC_BO_STEP8_PROPOSAL.
+    step8_proposal: str = "screen"
     # Early stopping: halt Step 8 after this many consecutive invalid proposals. Set <= 0 to
     # DISABLE (run the full budget) — required for a budget-matched comparison, since early
     # stopping otherwise makes two-stage under-spend relative to one-stage's fixed loop.
@@ -126,12 +152,15 @@ class TwoStageConfig:
 
 @dataclass(frozen=True)
 class ThermoConfig:
-    """Thermodynamic backend selection and fallback behavior."""
+    """Thermodynamic backend selection.
+
+    Binary mixtures require the REFPROP backend; when REFPROP cannot evaluate a pair the
+    error propagates and the pipelines skip that candidate (there is no mixing-rule
+    fallback). Mixtures that screen fine but fail cycle simulation are penalized and
+    become invalid-labels for the validity classifier.
+    """
 
     backend: ThermoBackend = "REFPROP"
-    # When the backend cannot return mixture properties, fall back to analytic mixing
-    # rules (logged and counted) instead of raising.
-    allow_mixing_rule_fallback: bool = True
 
 
 @dataclass(frozen=True)
@@ -203,6 +232,16 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     if n_targets:
         config = replace(
             config, twostage=replace(config.twostage, n_property_targets=int(n_targets))
+        )
+
+    step8 = os.environ.get("ORC_BO_STEP8_PROPOSAL")
+    if step8:
+        config = replace(config, twostage=replace(config.twostage, step8_proposal=step8))
+
+    vprior = os.environ.get("ORC_BO_VALIDITY_PRIOR")
+    if vprior:
+        config = replace(
+            config, twostage=replace(config.twostage, validity_prior_mean=float(vprior))
         )
 
     return config
