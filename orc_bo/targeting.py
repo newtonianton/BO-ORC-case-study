@@ -138,7 +138,7 @@ def success_mask(
 
 
 def fit_target_gp(x: torch.Tensor, y: torch.Tensor) -> SingleTaskGP:
-    """Fit a standardized single-output SingleTaskGP (e.g. the Step-8 efficiency GP)."""
+    """Fit a standardized single-output SingleTaskGP (the Step-8 efficiency regressor GPR2)."""
     model = SingleTaskGP(x, y, outcome_transform=Standardize(m=1))
     fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
     return model
@@ -315,7 +315,7 @@ def run_targeting(
     t_dim = onehot.shape[1]
     bounds = torch.stack([torch.zeros(t_dim, **TKWARGS), torch.ones(t_dim, **TKWARGS)])
 
-    def x_rows() -> torch.Tensor:
+    def x_rows() -> torch.Tensor: # translates (j1, j2, x) tuples into D-dimensional vectors
         rows = [simplex_row(onehot, j1, j2, x1) for (j1, j2, x1) in metadata]
         return torch.stack(rows, dim=0)
 
@@ -334,19 +334,19 @@ def run_targeting(
         # snapping, pure mode degrades toward (near-random) novel-vertex selection - the
         # one-hot equidistance leaves little structure - but the composite form is what makes
         # the continuous mixture space searchable, so both modes share it.
-        model = fit_property_gp(x_train, p_norm)
+        gpr1 = fit_property_gp(x_train, p_norm)  # GPR1: targeting surrogate (chemical -> props)
         proposed: Dict[int, MixtureKey] = {}
         claimed: set[MixtureKey] = set()
         for k in active:
             target_k = targets_norm[k]
             best_f = -torch.norm(p_norm - target_k.unsqueeze(0), dim=-1).min()
             objective = GenericMCObjective(
-                lambda samples, X=None, t=target_k: -torch.norm(samples - t, dim=-1)
+                lambda samples, X=None, t=target_k: -torch.norm(samples - t, dim=-1) # convert property samples to scalar whydistances
             )
             acqf = qLogExpectedImprovement(
-                model=model, best_f=best_f, sampler=sampler, objective=objective
+                model=gpr1, best_f=best_f, sampler=sampler, objective=objective # Expected Improvement with MC sampler - single scalar
             )
-            x_cand, _ = optimize_acqf(
+            x_cand, _ = optimize_acqf(  # then gradient ascent via backward pass to find vector yielding highest EI (reparameterization trick)
                 acq_function=acqf, bounds=bounds, q=1,
                 num_restarts=min(config.bo.num_restarts, 2 * t_dim),
                 raw_samples=config.bo.raw_samples,
@@ -355,8 +355,9 @@ def run_targeting(
             selection = snap_selection(
                 mode, x_cand.squeeze(0), onehot, evaluated_mixtures,
                 composition_threshold=config.mixture.composition_threshold,
+                min_frac=config.mixture.min_mole_frac,
             )
-            if selection not in claimed:
+            if selection not in claimed: # so we don't propose same chemical mixture twice, stored in claimed chemicals
                 proposed[k] = selection
                 claimed.add(selection)
 
@@ -385,8 +386,8 @@ def run_targeting(
                                format_mixture_name(f1.name, f2.name if f2 else None, x1))
                 continue
             metadata.append((j1, j2, x1))
-            p_real = torch.cat([p_real, torch.tensor([[tc, pc]], **TKWARGS)], dim=0)
-            x_train = torch.cat([x_train, simplex_row(onehot, j1, j2, x1).unsqueeze(0)], dim=0)
+            p_real = torch.cat([p_real, torch.tensor([[tc, pc]], **TKWARGS)], dim=0) # [Tc, Pc] vectors
+            x_train = torch.cat([x_train, simplex_row(onehot, j1, j2, x1).unsqueeze(0)], dim=0) # chemical composition vectors
             tries_left[k] -= 1
 
         normalizer.maybe_expand(p_real)
@@ -396,7 +397,7 @@ def run_targeting(
             if done[k]:
                 continue
             dmin, arg = torch.min(torch.norm(p_norm - targets_norm[k].unsqueeze(0), dim=-1), dim=0)
-            if float(dmin) <= radius:
+            if float(dmin) <= radius: # ball around target p*
                 done[k], hit_row[k], hit_dist[k] = True, int(arg.item()), float(dmin.item())
 
     results = [

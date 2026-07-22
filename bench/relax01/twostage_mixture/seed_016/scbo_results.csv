@@ -1,0 +1,17 @@
+phase,order,mixture,mode,comp1,comp2,x1,Tc_K,Pc_Pa,eta,p_evap_bar,p_cond_bar,cost
+INIT,1,n-Octane[0.50]&MM[0.50],mixture,n-Octane,MM,0.5,543.72,2222480.3152123904,0.10972645180191927,1.821735737222985,0.051943183112509346,5.5
+INIT,2,HeavyWater[0.45]&IsoButene[0.55],mixture,HeavyWater,IsoButene,0.45,519.68065,16305763.50133464,-0.05,-1.0,-1.0,6.5
+INIT,3,HeavyWater[0.40]&n-Octane[0.60],mixture,HeavyWater,n-Octane,0.4,598.7828,9221587.294362914,0.07638554669627756,3.0553366570796223,0.4556044770174748,7.5
+INIT,4,HeavyWater[0.50]&Benzene[0.50],mixture,HeavyWater,Benzene,0.5,602.9335,19783307.693551708,0.01935789762770593,14.969888217851752,12.311222523126656,8.5
+INIT,5,Benzene[0.37]&n-Octane[0.63],mixture,Benzene,n-Octane,0.37,589.0115013588352,3866229.7830982856,0.11840443696456228,2.4387350408218076,0.07495585601093178,9.5
+OPT,6,MethylOleate[0.48]&DimethylCarbonate[0.52],mixture,MethylOleate,DimethylCarbonate,0.48,665.0,2861177.0196283823,-0.05,-1.0,-1.0,10.5
+OPT,7,Toluene[0.49]&MethylLinolenate[0.51],mixture,Toluene,MethylLinolenate,0.49,697.4475,2089013.3674290823,-0.05,-1.0,-1.0,11.5
+OPT,8,MethylLinoleate[0.48]&R141b[0.52],mixture,MethylLinoleate,R141b,0.48,618.86,1960474.1208757972,-0.05,-1.0,-1.0,12.5
+OPT,9,MethylLinoleate[0.48]&n-Nonane[0.52],mixture,MethylLinoleate,n-Nonane,0.48,679.726,1783365.6700639883,-0.05,-1.0,-1.0,13.5
+OPT,10,MethylOleate[0.49]&CycloHexane[0.51],mixture,MethylOleate,CycloHexane,0.49,665.5160000000001,1872688.3492183269,-0.05,-1.0,-1.0,14.5
+OPT,11,DimethylCarbonate[0.49]&D6[0.51],mixture,DimethylCarbonate,D6,0.49,602.2778000000001,1427501.7635219377,-0.05,-1.0,-1.0,15.5
+OPT,12,p-Xylene[0.49]&EthylBenzene[0.51],mixture,p-Xylene,EthylBenzene,0.49,616.4028275528558,3577570.3577435575,0.12008907935020954,0.7710545574351132,0.023439653704220468,16.5
+OPT,13,Isopentane[0.49]&n-Dodecane[0.51],mixture,Isopentane,n-Dodecane,0.49,635.8140074501976,3857417.088357099,-0.05,-1.0,-1.0,17.5
+OPT,14,D6[0.50]&MethylLinolenate[0.50],mixture,D6,MethylLinolenate,0.5,722.39,1216016.74132806,-0.05,-1.0,-1.0,18.5
+OPT,15,n-Pentane[0.47]&n-Dodecane[0.53],mixture,n-Pentane,n-Dodecane,0.47000000000000003,633.5792336161171,3491122.7306166985,-0.05,-1.0,-1.0,19.5
+OPT,16,Water[0.48]&n-Butane[0.52],mixture,Water,n-Butane,0.48,581.3531452560793,58695142.43478956,-0.05,-1.0,-1.0,20.5

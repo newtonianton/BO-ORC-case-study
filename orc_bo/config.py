@@ -11,6 +11,8 @@ Environment overrides (applied on top of file/defaults):
     ORC_BO_N_TARGETS     -> twostage.n_property_targets (pre-SCBO coverage; for sweeps)
     ORC_BO_STEP8_PROPOSAL-> twostage.step8_proposal ("screen" or "inverse"; for the ablation)
     ORC_BO_VALIDITY_PRIOR-> twostage.validity_prior_mean (negative = pessimistic GPC2)
+    ORC_BO_LAB_COST      -> bo.lab_cost (lab-to-process cost ratio; for the sensitivity sweep)
+    ORC_BO_MIN_MOLE_FRAC -> mixture.min_mole_frac (composition clamp; for the clamp ablation)
     ORC_BO_REFPROP_PATH  -> REFPROP install directory (see orc_bo.thermo; default is the
                             standard Windows location C:\\Program Files (x86)\\REFPROP)
 """
@@ -48,6 +50,13 @@ class ORCConfig:
     generator_eff: float = 0.97
     source_pressure_pa: float = 5e5
     sink_pressure_pa: float = 4e5
+    # Minimum heat-exchanger approach temperatures (pinch), matching Chys et al. (2012,
+    # Energy 44:623-632) Table 2 for the low-temperature heat source this study replicates.
+    # A pinch of 0 (no minimum approach) is a thermodynamic idealization relative to the
+    # source study; these defaults instead require the working fluid to stay at least this
+    # many degrees from the source/sink profile at every point in each exchanger.
+    pinch_evap_k: float = 20.0
+    pinch_cond_k: float = 10.0
     # Feasibility guards used by the simulation.
     eta_max: float = 0.35
     infeasible_penalty: float = -0.05
@@ -104,47 +113,48 @@ class TwoStageConfig:
     """Hyperparameters specific to the two-stage property-targeting pipeline."""
 
     n_property_targets: int = 20
-    # required_valid_init counts REACHED targets (reachability), not validity/operability, and
-    # caps the Step-7 realisation batch. Set equal to the one-stage n_init so both pipelines
-    # spend the same number of initial (pre-exploitation) SCBO evaluations (budget-matched
-    # comparison): with n_init=5 and system_budget=20, each pipeline uses 5 + 20 = 25.
+    
+    # Number of REACHED (not necessarily operable) targets required to end the Step-6 
+    # initialization phase. Caps the initial SCBO batch in Step 7. Matches the one-stage 
+    # baseline's initial budget to ensure strict evaluation parity.
     required_valid_init: int = 5
+    
     target_budget: int = 3
     radius_norm: float = 0.15
-    # Probability threshold for the REACHABILITY GPC (a property region is reachable).
+    
+    # Minimum probability for GPC1 to classify a property region as physically reachable.
     gpc_feasibility_threshold: float = 0.5
+    
     gpc_candidates: int = 20_000
     gpc_max_rounds: int = 4
     gpc_steps: int = 200
     gpc_lr: float = 0.1
-    # Step-8 cEI exploitation loop.
+    
+    # Budget for the Step-8 cEI exploitation loop.
     system_budget: int = 3
-    # Latent prior mean for the VALIDITY GPC (GPC2) only; 0.0 = neutral (far-from-data
-    # probability 0.5). Negative values are pessimistic: with the probit link the far-field
-    # probability is Phi(m / sqrt(1 + s^2)) (~0.24 at -1.0), so unlabeled property regions
-    # read "inoperable until demonstrated" and the Step-8 cEI stops treating unexplored
-    # high-Tc corners as attractive. The reachability GPC keeps a neutral prior (Step-6
-    # refill thresholds at 0.5 and would stall under pessimism). Ablate via
-    # ORC_BO_VALIDITY_PRIOR.
+    
+    # Latent prior mean for the Validity GPC (GPC2). 
+    #  * 0.0: Neutral (far-field probability ~0.5).
+    #  * <0.0: Pessimistic (e.g., -1.0 yields ~0.24). Teaches the cEI to avoid 
+    #          unexplored regions (like high-Tc corners) until demonstrated operable. 
+    # Note: GPC1 (Reachability) always uses a neutral prior to prevent initialization stalls.
     validity_prior_mean: float = 0.0
-    # How Step 8 turns the cEI (EI x P_reach x P_valid) into a concrete proposal:
-    #   "screen"  - Monte-Carlo screen: sample candidates in chemical space, snap/realize
-    #               them, score the cEI at their actual (Tc, Pc), take the argmax.
-    #   "inverse" - theoretical inverse design: maximize the cEI over property space to get
-    #               a target p*, then realize p* with the Stage-1 targeting machinery
-    #               (extra screens are charged to the cost budget). Ablation pair for
-    #               "screen"; override per run with ORC_BO_STEP8_PROPOSAL.
+    
+    # Defines how Step 8 translates the cEI into a physical candidate:
+    #  * "screen":  Forward design. Samples chemical candidates, calculates their true 
+    #               Tc/Pc, evaluates cEI at those coordinates, and takes the argmax.
+    #  * "inverse": Inverse design. Maximizes cEI directly in property space to find an 
+    #               ideal target p*, then uses Stage-1 targeting to find a matching chemical.
     step8_proposal: str = "screen"
-    # Early stopping: halt Step 8 after this many consecutive invalid proposals. Set <= 0 to
-    # DISABLE (run the full budget) — required for a budget-matched comparison, since early
-    # stopping otherwise makes two-stage under-spend relative to one-stage's fixed loop.
+    
+    # Halts Step 8 after this many consecutive invalid proposals. Set to 0 to disable.
+    # Must be disabled (0) when benchmarking against a one-stage baseline to ensure 
+    # neither architecture artificially under-spends its simulation budget.
     failure_allowance: int = 0
-    # Operable-Tc-band prior on property targets. OFF by default, so two-stage targets the full
-    # observed (Tc, Pc) range like one-stage and the comparison isolates the algorithm rather
-    # than a domain prior. Set use_tc_band=True to restrict targets to the operable band
-    # [tc_min_k or source, tc_max_k or source+200 K] -- concentrates the SCBO budget on fluids
-    # that can run the cycle (e.g. excludes 700 K siloxanes), but injects domain knowledge that
-    # the one-stage pipeline does not receive. The band is clamped to the observed range.
+    
+    # Optional domain prior: use_tc_band (implied). OFF by default to ensure fair, 
+    # knowledge-free comparisons with baselines. If ON, restricts targeting strictly 
+    # to the mechanically operable Tc band, avoiding fluids that inherently cannot run.
     use_tc_band: bool = False
     tc_min_k: Optional[float] = None
     tc_max_k: Optional[float] = None
@@ -243,6 +253,14 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         config = replace(
             config, twostage=replace(config.twostage, validity_prior_mean=float(vprior))
         )
+
+    lab_cost = os.environ.get("ORC_BO_LAB_COST")
+    if lab_cost is not None and lab_cost != "":
+        config = replace(config, bo=replace(config.bo, lab_cost=float(lab_cost)))
+
+    min_frac = os.environ.get("ORC_BO_MIN_MOLE_FRAC")
+    if min_frac is not None and min_frac != "":
+        config = replace(config, mixture=replace(config.mixture, min_mole_frac=float(min_frac)))
 
     return config
 

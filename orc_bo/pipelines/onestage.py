@@ -68,18 +68,20 @@ def _select(
     onehot: torch.Tensor,
     evaluated_mixtures: Set[MixtureKey],
     composition_threshold: float,
+    min_frac: float,
 ) -> tuple[int, Optional[int], float]:
     """Snap a continuous suggestion to a (j1, j2, x1) selection for the given mode.
 
     Pure mode uses :func:`snap_to_vertex_novel` (not the novelty-free ``snap_to_vertex``): the
     qLogEI loop is exploitative and, without a novelty guard, would repeatedly snap back to the
     incumbent vertex and re-evaluate the same handful of fluids. Snapping to the nearest
-    *unevaluated* vertex forces the loop to explore distinct fluids.
+    *unevaluated* vertex forces the loop to explore distinct fluids. ``min_frac`` is the
+    mixture composition-clamp bound (from ``config.mixture.min_mole_frac``).
     """
     if mode == "pure":
         return snap_to_vertex_novel(x_suggest, onehot, evaluated_mixtures), None, 1.0
     return snap_to_mixture(x_suggest, onehot, evaluated_mixtures,
-                           composition_threshold=composition_threshold)
+                           min_frac=min_frac, composition_threshold=composition_threshold)
 
 
 def run_onestage(
@@ -122,6 +124,7 @@ def run_onestage(
         # failures do not silently shrink the spend.
         scbo_budget = max(0, int(round(config.bo.cost_budget)) - n_init)
     threshold = config.mixture.composition_threshold
+    min_frac = config.mixture.min_mole_frac
     seed = base_seed()
     subdir = Path(outdir) / f"seed_{seed:03d}"
 
@@ -154,7 +157,7 @@ def run_onestage(
         lhs = torch.tensor(qmc.LatinHypercube(d=t_dim, seed=seed).random(n_init), **TKWARGS)
         order = 0
         for k in range(lhs.shape[0]):
-            j1, j2, x1 = _select(mode, lhs[k], onehot, evaluated_mixtures, threshold)
+            j1, j2, x1 = _select(mode, lhs[k], onehot, evaluated_mixtures, threshold, min_frac)
             evaluated_mixtures.add(mixture_key_canonical(j1, j2, x1))
             cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
             if cand is None:
@@ -196,7 +199,7 @@ def run_onestage(
                 options={"batch_limit": 5, "maxiter": 200},
             )
             x_next = x_cand.squeeze(0)
-            j1, j2, x1 = _select(mode, x_next, onehot, evaluated_mixtures, threshold)
+            j1, j2, x1 = _select(mode, x_next, onehot, evaluated_mixtures, threshold, min_frac)
             evaluated_mixtures.add(mixture_key_canonical(j1, j2, x1))
             cand = realize_candidate(mode, j1, j2, x1, fluids, onehot, config)
             if cand is None:
@@ -213,6 +216,7 @@ def run_onestage(
         # which add cost without writing a row).
         writer.write_note(f"total cost spent: {writer.cost:.1f}")
         writer.write_note(simulator.carnot_report())
+        writer.write_note(simulator.backend_failure_report())
 
     best_idx = int(torch.tensor(y_train_vals).argmax().item())
     result = OneStageResult(

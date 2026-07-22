@@ -1,0 +1,28 @@
+# ORC-BO run parameters (these must match across seeds before pooling results)
+# run: stage=twostage mode=mixture backend=REFPROP seed=17 n_init=5 scbo_budget=15
+# dataset: C:\Users\natha\OneDrive - Imperial College London\third year\UROP\Calvin\orc_bo\data\Joback_Refrigerants.csv
+# [orc] t_in_source_c=150.0 t_out_source_c=135.0 t_in_sink_c=25.0 t_out_sink_c=35.0 mfr_source=15.0 pump_eff=0.8 turbine_eff=0.65 generator_eff=0.97 source_pressure_pa=500000.0 sink_pressure_pa=400000.0 eta_max=0.35 infeasible_penalty=-0.05 infeasible_pinch=500.0
+# [bo] scbo_dim=2 batch_size=4 scbo_n_init=10 n_candidates=5000 tr_length_init=0.8 tr_length_min=0.015625 tr_length_max=1.6 success_tolerance=3 mc_samples=512 num_restarts=10 raw_samples=512 scbo_max_retries=4 gp_noise=1e-05 gp_max_noise=1.0 cost_budget=20.0 lab_cost=0.1
+# [mixture] min_mole_frac=0.01 composition_threshold=0.01
+# [twostage] n_property_targets=20 required_valid_init=5 target_budget=3 radius_norm=0.15 gpc_feasibility_threshold=0.5 gpc_candidates=20000 gpc_max_rounds=4 gpc_steps=200 gpc_lr=0.1 system_budget=3 validity_prior_mean=0.0 step8_proposal=screen failure_allowance=0 use_tc_band=False tc_min_k=None tc_max_k=None
+# [thermo] backend=REFPROP
+# ---- evaluated fluids ----
+MethylPalmitate[0.48]&Dichloroethane[0.52]
+Cyclopentane[0.50]&MD3M[0.50]
+n-Octane[0.36]&Dichloroethane[0.64]
+Dichloroethane[0.48]&Acetone[0.52]
+Dichloroethane[0.40]&MethylPalmitate[0.60]
+Cyclopentane[0.49]&R11[0.51]
+EthyleneOxide[0.49]&R142b[0.51]
+Methanol[0.47]&DiethylEther[0.53]
+Cyclopentane[0.50]&EthyleneOxide[0.50]
+R1233zd(E)[0.50]&R236EA[0.50]
+Dichloroethane[0.50]&R21[0.50]
+n-Nonane[0.48]&Toluene[0.52]
+Acetone[0.50]&Toluene[0.50]
+trans-2-Butene[0.50]&Ethanol[0.50]
+R40[0.50]&R123[0.50]
+Neopentane[0.50]&Dichloroethane[0.50]
+# total cost spent: 20.1
+# carnot_guard: 0/1854 simulate calls (0.00%) exceeded the eta ceiling 0.2954 and were rejected (no issue)
+# backend could not evaluate 0/16 fluids (0%)

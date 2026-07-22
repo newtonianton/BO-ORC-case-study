@@ -252,17 +252,21 @@ def snap_selection(
     onehot_tensor: torch.Tensor,
     evaluated: Set["MixtureKey"],
     composition_threshold: float = DEFAULT_COMPOSITION_THRESHOLD,
+    min_frac: float = MIN_MOLE_FRAC,
 ) -> "MixtureKey":
     """Snap a continuous suggestion to a selection for the given mode.
 
     ``"pure"`` -> ``(j, None, 1.0)`` (nearest novel vertex); ``"mixture"`` -> a binary
-    ``(j1, j2, x1)`` edge selection. One call unifies the two BO fluid spaces so pipelines
-    can be written mode-agnostically.
+    ``(j1, j2, x1)`` edge selection with ``min_frac <= x1 <= 1 - min_frac``. One call unifies
+    the two BO fluid spaces so pipelines can be written mode-agnostically. ``min_frac`` is the
+    composition-clamp bound (a modeling choice bounding mixtures away from degenerate near-pure
+    compositions), threaded from ``config.mixture.min_mole_frac``.
     """
     if mode == "pure":
         return (snap_to_vertex_novel(x_suggestion, onehot_tensor, evaluated), None, 1.0)
     return snap_to_mixture(
-        x_suggestion, onehot_tensor, evaluated, composition_threshold=composition_threshold
+        x_suggestion, onehot_tensor, evaluated,
+        min_frac=min_frac, composition_threshold=composition_threshold,
     )
 
 

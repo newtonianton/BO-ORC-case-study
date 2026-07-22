@@ -19,13 +19,14 @@ uses these words consistently:
 
 * **Reachability** (property-space feasibility): whether some realizable fluid/mixture lies
   within ``radius_norm`` of a target point in normalized ``(Tc, Pc)`` space. Modelled by the
-  *reachability* GP classifier (``P_prop``); its labels come from
-  :func:`orc_bo.targeting.success_mask`. NOTE: the historical field ``required_valid_init``
-  and log phrase "valid targets" both refer to *reachability* (a target was reached), NOT to
-  validity below.
+  *reachability* GP classifier **GPC1** (``P_reach``; variables ``gpc1_model``/``gpc1_lik``);
+  its labels come from :func:`orc_bo.targeting.success_mask`. NOTE: the historical field
+  ``required_valid_init`` and log phrase "valid targets" both refer to *reachability* (a
+  target was reached), NOT to validity below.
 * **Validity** (operability feasibility): whether a fluid/mixture admits at least one ORC
   operating point that satisfies the constraints, i.e. SCBO returns a positive efficiency.
-  Modelled by the *validity* GP classifier (``P_sys``).
+  Modelled by the *validity* GP classifier **GPC2** (``P_valid``; variables
+  ``gpc2_model``/``gpc2_lik``).
 * **Constraint feasibility** (operating point): whether a specific ``(p_evap, p_cond)``
   satisfies the pressure-ordering and pinch constraints. This is the SCBO inner-loop notion
   (see :mod:`orc_bo.scbo`); a fluid is *valid* iff at least one operating point is
@@ -173,6 +174,7 @@ def run_twostage(
     if scbo_budget is None:
         scbo_budget = ts.system_budget
     threshold = config.mixture.composition_threshold
+    min_frac = config.mixture.min_mole_frac
     seed = base_seed()
     subdir = Path(outdir) / f"seed_{seed:03d}"
 
@@ -196,7 +198,7 @@ def run_twostage(
     thermo.reset_screen_count()  # count Stage-1 lab-scale screens for the cost-weighted budget
     lhs = torch.tensor(qmc.LatinHypercube(d=t_dim, seed=seed).random(n=n_init), **TKWARGS)
     for k in range(lhs.shape[0]):
-        j1, j2, x1 = snap_selection(mode, lhs[k], onehot, evaluated_mixtures, threshold)
+        j1, j2, x1 = snap_selection(mode, lhs[k], onehot, evaluated_mixtures, threshold, min_frac)
         evaluated_mixtures.add((j1, j2, x1))
         f1 = fluids[j1]
         f2 = fluids[j2] if j2 is not None else None
@@ -263,25 +265,25 @@ def run_twostage(
     while num_reached < ts.required_valid_init and gpc_round < ts.gpc_max_rounds:
         gpc_round += 1
         x_targets = normalizer.to_norm(asked_targets_real, clip=False)
-        # Reachability GPC: P(a target here is reachable by some realizable mixture).
-        # Measured property points are included as positive examples.
+        # GPC1 (reachability, P_reach): P(a target here is reachable by some realizable
+        # mixture). Measured property points are included as positive examples.
         x_gpc, y_gpc = _reachability_training_set(asked_targets_real, labels, p_real, normalizer)
-        model, likelihood = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
+        gpc1_model, gpc1_lik = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
         # Refill candidates are drawn only from the operable Tc band, then normalized for the GPC.
         candidates = normalizer.to_norm(
             _sample_band(ts.gpc_candidates, tc_band, pc_bounds), clip=False
         )
-        proba = gpc_predict_proba(model, likelihood, candidates)
+        proba = gpc_predict_proba(gpc1_model, gpc1_lik, candidates)
         reachable = candidates[proba >= ts.gpc_feasibility_threshold]
         if reachable.numel() == 0:
             logger.info("[%s] reachability GPC found no reachable region in round %d; stopping",
                         PHASE_TARGET, gpc_round)
             break
         to_add = ts.required_valid_init - num_reached
-        new_targets_norm = greedy_maximin(x_targets, reachable, k=to_add)
+        new_targets_norm = greedy_maximin(x_targets, reachable, k=to_add) # fallback 1 if not enough valid candidates; from reachable points, successively pick point furthest away from everything already tried
         new_targets_real = normalizer.to_real(new_targets_norm)
 
-        metadata, p_real, evaluated_mixtures, _ = run_targeting(
+        metadata, p_real, evaluated_mixtures, _ = run_targeting( # already have data, involve GPR1 onto GPC1 filtered property targets
             new_targets_real, metadata, p_real, normalizer, onehot, evaluated_mixtures,
             fluids, config, radius=ts.radius_norm, budget_per_target=ts.target_budget, mode=mode,
         )
@@ -300,7 +302,7 @@ def run_twostage(
     n_lab = thermo.screen_count()
     if config.bo.cost_budget is not None:
         k_total = max(0, int(round(config.bo.cost_budget - config.bo.lab_cost * n_lab)))
-        step7_budget = min(ts.required_valid_init, k_total)
+        step7_budget = min(ts.required_valid_init, k_total) # if upfront screening tax so high you don't have enough to evaluate the initial fluids, just use whatever is left
         step8_budget = k_total - step7_budget
         cost_offset = config.bo.lab_cost * n_lab
         logger.info("Cost budget %.1f: L=%d screens (cost %.1f) -> SCBO K=%d (Step7 %d + Step8 %d)",
@@ -316,7 +318,7 @@ def run_twostage(
     realized_ids = sorted({row for ok, row in zip(flags, success_rows) if ok and row >= 0})
     # Step-7 near-miss fill: if fewer targets were reached within radius than the init budget,
     # top up with the closest realized fluids (by property distance) so the init phase always
-    # spends its budget (keeps the two-stage cost matched to one-stage).
+    # spends its budget (keeps the two-stage cost matched to one-stage). I.e. If greedy_maximin + GPR1 fails, rank evaluated targets by distance to targets and add best "near-misses".
     if len(realized_ids) < step7_budget:
         p_norm_all = normalizer.to_norm(p_real, clip=False)
         tgt_norm = normalizer.to_norm(asked_targets_real, clip=False)
@@ -329,10 +331,12 @@ def run_twostage(
     n_scbo = 0
     scbo_props: List[List[float]] = []
     scbo_eta: List[float] = []
-    # Fluids actually SCBO-evaluated (distinct from evaluated_mixtures, which also holds every
-    # cheap targeting-touched fluid). Step 8 excludes only these, so it can still propose a
-    # fluid that was screened in Stage 1 but never run -- otherwise the saturated targeting set
-    # starves the exploitation loop and it under-spends the budget.
+    # We track ONLY the fluids that have undergone the expensive cycle simulation (SCBO).
+    # This is distinct from `evaluated_mixtures`, which is a massive list of every fluid 
+    # that was screened during the cheap targeting phase. Allowed to simulate 
+    # a fluid that was already screened in the cheap targeting phase. 
+    # If we blocked all cheaply-screened fluids, the main loop would quickly run out of 
+    # viable candidates (starvation) and fail to spend its simulation budget.
     scbo_keys: Set[MixtureKey] = set()
     header = format_run_header(config, stage="twostage", mode=mode, seed=seed,
                                n_init=n_init, scbo_budget=scbo_budget)
@@ -365,6 +369,7 @@ def run_twostage(
         # True total spend (the cost column cannot show trailing non-SCBO charges).
         writer.write_note(f"total cost spent: {writer.cost:.1f}")
         writer.write_note(simulator.carnot_report())
+        writer.write_note(simulator.backend_failure_report())
 
     result = TwoStageResult(
         best_name=best_name,
@@ -404,15 +409,15 @@ def _exploitation_loop(
 ) -> tuple[float, str, int]:
     """Step-8 probability-weighted cEI exploitation loop.
 
-    Scores candidates by ``EI x P_prop x P_sys`` and SCBOs the best:
+    Scores candidates by ``EI x P_reach x P_valid`` and SCBOs the best:
 
-    * ``P_prop`` - **reachability** GPC over property coordinates: P(a target here is
-      reachable by some realizable mixture). Trained on asked targets plus measured
-      property points as positives.
-    * ``P_sys``  - **validity** GPC over SCBO'd mixtures: P(a constraint-feasible operating
-      point exists, i.e. eta > 0).
-    * ``EI``     - expected efficiency improvement from a GP of (property -> eta), fit on
-      *valid* outcomes only.
+    * ``P_reach`` (**GPC1**, reachability) - GPC over property coordinates: P(a target here
+      is reachable by some realizable mixture). Trained on asked targets plus measured
+      property points as positives. Variables: ``gpc1_model``/``gpc1_lik``.
+    * ``P_valid`` (**GPC2**, validity) - GPC over SCBO'd mixtures: P(a constraint-feasible
+      operating point exists, i.e. eta > 0). Variables: ``gpc2_model``/``gpc2_lik``.
+    * ``EI`` (**GPR2**, efficiency) - expected efficiency improvement from a GP of
+      (property -> eta), fit on *valid* outcomes only. Variable: ``gpr2``.
 
     Two proposal strategies (``config.twostage.step8_proposal``; ablation pair):
 
@@ -435,9 +440,9 @@ def _exploitation_loop(
         return best_eta, best_name, order
     inverse = ts.step8_proposal == "inverse"
 
-    # P_prop: reachability GPC (asked targets + measured positives).
+    # GPC1 (reachability, P_reach): asked targets + measured positives.
     x_gpc, y_gpc = _reachability_training_set(asked_targets_real, labels, p_real, normalizer)
-    prop_model, prop_lik = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
+    gpc1_model, gpc1_lik = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
 
     budget = system_budget
     failures = 0
@@ -448,38 +453,38 @@ def _exploitation_loop(
                 and writer.cost + 1.0 > config.bo.cost_budget + 1e-9):
             logger.info("[%s] cost budget exhausted (%.2f spent); stopping", PHASE_OPT, writer.cost)
             break
-        # (Re)train the validity GPC (P_sys) and efficiency GP from accumulated outcomes.
-        orc_gpc = orc_lik = eff_gp = None
+        # (Re)train GPC2 (validity, P_valid) and GPR2 (efficiency) from accumulated outcomes.
+        gpc2_model = gpc2_lik = gpr2 = None
         if scbo_props:
             props_t = normalizer.to_norm(torch.tensor(scbo_props, **TKWARGS), clip=True)
             valid = [e > 0 for e in scbo_eta]  # validity: a feasible operating point exists
-            # P_sys (validity) is always applied when trainable — it needs both a valid and
-            # an invalid example present (a one-class classifier is undefined).
+            # GPC2 (validity) is applied whenever trainable — it needs both a valid and an
+            # invalid example present (a one-class classifier is undefined).
             if any(valid) and not all(valid):
                 y_valid = torch.tensor([[1.0 if v else 0.0] for v in valid], **TKWARGS)
-                orc_gpc, orc_lik = train_gpc(props_t, y_valid, steps=ts.gpc_steps,
+                gpc2_model, gpc2_lik = train_gpc(props_t, y_valid, steps=ts.gpc_steps,
                                              lr=ts.gpc_lr, prior_mean=ts.validity_prior_mean)
-            # Efficiency GP for the EI base — VALID outcomes only (eta > 0). The infeasible
-            # penalty is a sentinel, not an efficiency, and would corrupt the regression.
+            # GPR2 (efficiency GP) for the EI base — VALID outcomes only (eta > 0). The
+            # infeasible penalty is a sentinel, not an efficiency, and would corrupt the fit.
             valid_pts = [(p, e) for p, e in zip(scbo_props, scbo_eta) if e > 0]
             if len(valid_pts) >= 3:
-                P_valid = normalizer.to_norm(
+                props_valid = normalizer.to_norm(
                     torch.tensor([p for p, _ in valid_pts], **TKWARGS), clip=True)
                 y_eta = torch.tensor([e for _, e in valid_pts], **TKWARGS).reshape(-1, 1)
-                eff_gp = fit_target_gp(P_valid, y_eta)
+                gpr2 = fit_target_gp(props_valid, y_eta)
         if inverse:
             chosen, asked_targets_real, labels, metadata, p_real = _propose_by_inverse_design(
-                prop_model, prop_lik, orc_gpc, orc_lik, eff_gp, best_eta, fluids, onehot,
+                gpc1_model, gpc1_lik, gpc2_model, gpc2_lik, gpr2, best_eta, fluids, onehot,
                 scbo_keys, evaluated_mixtures, metadata, p_real, asked_targets_real, labels,
                 normalizer, config, mode, writer,
             )
             # Theoretical loop: the new target's outcome is a fresh reachability label, so
             # retrain GPC1 for the next iteration.
             x_gpc, y_gpc = _reachability_training_set(asked_targets_real, labels, p_real, normalizer)
-            prop_model, prop_lik = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
+            gpc1_model, gpc1_lik = train_gpc(x_gpc, y_gpc, steps=ts.gpc_steps, lr=ts.gpc_lr)
         else:
             chosen = _propose_by_cei(
-                prop_model, prop_lik, orc_gpc, orc_lik, eff_gp, best_eta, fluids, onehot,
+                gpc1_model, gpc1_lik, gpc2_model, gpc2_lik, gpr2, best_eta, fluids, onehot,
                 scbo_keys, normalizer, config, mode, n_screen,
             )
         if chosen is None:
@@ -506,11 +511,11 @@ def _exploitation_loop(
 
 
 def _propose_by_inverse_design(
-    prop_model,
-    prop_lik,
-    orc_gpc,
-    orc_lik,
-    eff_gp,
+    gpc1_model,
+    gpc1_lik,
+    gpc2_model,
+    gpc2_lik,
+    gpr2,
     best_eta: float,
     fluids: List[Fluid],
     onehot: torch.Tensor,
@@ -528,9 +533,10 @@ def _propose_by_inverse_design(
 ) -> tuple[Optional[Candidate], torch.Tensor, torch.Tensor, List[MixtureKey], torch.Tensor]:
     """Theoretical inverse design: maximize the cEI over property space, then realize.
 
-    Implements the constrained acquisition literally: ``p* = argmax_p P_prop(p) x P_sys(p)
-    x EI(p)`` over the normalized property box, evaluated on a dense Sobol grid (the space
-    is 2-D, so a dense screen is effectively exact). The Stage-1 targeting machinery then
+    Implements the constrained acquisition literally: ``p* = argmax_p P_reach(p) x
+    P_valid(p) x EI(p)`` (GPC1 x GPC2 x GPR2) over the normalized property box, evaluated on
+    a dense Sobol grid (the space is 2-D, so a dense screen is effectively exact). The
+    Stage-1 targeting machinery then
     drives fluids toward ``p*``, and the SCBO candidate is the realized fluid closest to
     ``p*`` that has not been SCBO'd yet. The extra property screens are charged to the cost
     budget via ``writer.add_cost``, and the realization outcome (reached within radius or
@@ -543,12 +549,12 @@ def _propose_by_inverse_design(
 
     # p* = argmax of the property-space cEI on a dense Sobol grid over [0, 1]^2.
     grid = SobolEngine(dimension=2, scramble=True, seed=derive_seed(8001)).draw(n_grid).to(**TKWARGS)
-    score = gpc_predict_proba(prop_model, prop_lik, grid)
-    if orc_gpc is not None:
-        score = score * gpc_predict_proba(orc_gpc, orc_lik, grid)
-    if eff_gp is not None and best_eta > 0.0:
+    score = gpc_predict_proba(gpc1_model, gpc1_lik, grid)  # GPC1: P_reach
+    if gpc2_model is not None:
+        score = score * gpc_predict_proba(gpc2_model, gpc2_lik, grid)  # GPC2: P_valid
+    if gpr2 is not None and best_eta > 0.0:  # GPR2: EI
         try:
-            ei = LogExpectedImprovement(eff_gp, best_f=best_eta)
+            ei = LogExpectedImprovement(gpr2, best_f=best_eta)
             with torch.no_grad():
                 score = score * ei(grid.unsqueeze(1)).exp()
         except Exception as exc:  # analytic EI can fail on degenerate posteriors
@@ -590,11 +596,11 @@ def _propose_by_inverse_design(
 
 
 def _propose_by_cei(
-    prop_model,
-    prop_lik,
-    orc_gpc,
-    orc_lik,
-    eff_gp,
+    gpc1_model,
+    gpc1_lik,
+    gpc2_model,
+    gpc2_lik,
+    gpr2,
     best_eta: float,
     fluids: List[Fluid],
     onehot: torch.Tensor,
@@ -604,7 +610,8 @@ def _propose_by_cei(
     mode: str,
     n_screen: int,
 ) -> Optional[Candidate]:
-    """Screen candidates not yet SCBO-evaluated; pick max of EI x P_prop x P_sys.
+    """Screen candidates not yet SCBO-evaluated; pick max of ``EI x P_reach x P_valid``
+    (GPR2 x GPC1 x GPC2).
 
     Novelty is judged against ``scbo_keys`` (fluids already SCBO'd), not the full targeting
     set, so a fluid screened cheaply in Stage 1 but never run is still a valid proposal.
@@ -615,7 +622,7 @@ def _propose_by_cei(
     for i in range(n_screen):
         j1, j2, x1 = snap_selection(
             mode, suggestions[i], onehot, scbo_keys,
-            config.mixture.composition_threshold,
+            config.mixture.composition_threshold, config.mixture.min_mole_frac,
         )
         key = mixture_key_canonical(j1, j2, x1)
         if key in scbo_keys or key in seen:
@@ -632,15 +639,15 @@ def _propose_by_cei(
         torch.tensor([[c.tc, c.pc] for c in realized], **TKWARGS), clip=True
     )
 
-    # P_prop: reachability (target reachable by some realizable mixture).
-    score = gpc_predict_proba(prop_model, prop_lik, props_norm)
-    # P_sys: validity (a constraint-feasible ORC operating point exists).
-    if orc_gpc is not None:
-        score = score * gpc_predict_proba(orc_gpc, orc_lik, props_norm)
-    # EI: expected efficiency improvement (cEI base) — only with a valid incumbent (eta > 0).
-    if eff_gp is not None and best_eta > 0.0:
+    # GPC1 (reachability, P_reach): target reachable by some realizable mixture.
+    score = gpc_predict_proba(gpc1_model, gpc1_lik, props_norm)
+    # GPC2 (validity, P_valid): a constraint-feasible ORC operating point exists.
+    if gpc2_model is not None:
+        score = score * gpc_predict_proba(gpc2_model, gpc2_lik, props_norm)
+    # GPR2 (efficiency) EI: expected improvement — only with a valid incumbent (eta > 0).
+    if gpr2 is not None and best_eta > 0.0:
         try:
-            ei = LogExpectedImprovement(eff_gp, best_f=best_eta)
+            ei = LogExpectedImprovement(gpr2, best_f=best_eta)
             with torch.no_grad():
                 score = score * ei(props_norm.unsqueeze(1)).exp()
         except Exception as exc:  # analytic EI can fail on degenerate posteriors

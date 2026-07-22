@@ -79,7 +79,7 @@ def refprop_available() -> bool:
     while running.
     """
     try:
-        CP.PropsSI("Tcrit", "REFPROP::R134a")
+        CP.PropsSI("Tcrit", "REFPROP::R134a") # test common fluid, CoolProp acts as wrapper
         return True
     except ThermoError as exc:
         logger.warning("REFPROP backend unavailable: %s", exc)

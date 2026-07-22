@@ -7,7 +7,9 @@ constraints for a given working fluid and pair of operating pressures.
 
 Pinch constraints use saturation (bubble/dew) temperatures so that zeotropic temperature
 glide in mixtures is handled correctly: both ends of each heat exchanger must satisfy the
-pinch, and the binding (maximum) violation is returned.
+pinch, and the binding (maximum) violation is returned. The working fluid must stay at
+least ``pinch_evap_k`` / ``pinch_cond_k`` degrees from the source/sink profile at every
+point (not just avoid crossing it); see :class:`~orc_bo.config.ORCConfig`.
 """
 from __future__ import annotations
 
@@ -27,8 +29,10 @@ class SimulationResult(NamedTuple):
     """Outcome of an ORC evaluation.
 
     Indexable as ``(eta, sink_pinch, source_pinch)`` for backward compatibility, and also
-    accessible by attribute. ``sink_pinch``/``source_pinch`` are temperature margins in
-    degrees Celsius; positive values violate the pinch (heat would flow the wrong way).
+    accessible by attribute. ``sink_pinch``/``source_pinch`` are margins in degrees Celsius
+    against the configured minimum approach temperature (``pinch_cond_k``/``pinch_evap_k``);
+    positive values violate the pinch (either the source/sink profile crosses the working
+    fluid, or the two are closer than the required minimum approach).
     """
 
     eta: float
@@ -155,23 +159,27 @@ class ORCSimulator:
             h2s = thermo.h_isentropic_from_s_p(s_g, p_cond, wf, self.backend, "turbine")
             h2 = h_g - o.turbine_eff * (h_g - h2s)
 
-            # Condenser pinch (handles glide): hot end = dew, cold end = bubble.
+            # Condenser pinch (handles glide): hot end = dew, cold end = bubble. Adding
+            # pinch_cond_k requires a minimum approach, not just no crossing.
             state.update(CP.PQ_INPUTS, p_cond, 1)
             t_dew_cond_c = state.T() - 273.15
             state.update(CP.PQ_INPUTS, p_cond, 0)
             t_bub_cond_c = state.T() - 273.15
-            snk_pinch = max(o.t_out_sink_c - t_dew_cond_c, o.t_in_sink_c - t_bub_cond_c)
+            snk_pinch = max(o.t_out_sink_c - t_dew_cond_c,
+                            o.t_in_sink_c - t_bub_cond_c) + o.pinch_cond_k
 
             # Pump: isentropic compression with efficiency.
             h1s = thermo.h_isentropic_from_s_p(s_f, p_evap, wf, self.backend, "pump")
             h1 = h_f - (h_f - h1s) / o.pump_eff
 
-            # Evaporator pinch (handles glide): cold end = bubble, hot end = dew.
+            # Evaporator pinch (handles glide): cold end = bubble, hot end = dew. Adding
+            # pinch_evap_k requires a minimum approach, not just no crossing.
             state.update(CP.PQ_INPUTS, p_evap, 0)
             t_bub_evap_c = state.T() - 273.15
             state.update(CP.PQ_INPUTS, p_evap, 1)
             t_dew_evap_c = state.T() - 273.15
-            src_pinch = max(t_dew_evap_c - o.t_in_source_c, t_bub_evap_c - o.t_out_source_c)
+            src_pinch = max(t_dew_evap_c - o.t_in_source_c,
+                            t_bub_evap_c - o.t_out_source_c) + o.pinch_evap_k
 
             # Energy balance.
             q_evap = o.mfr_source * (self._hin_src - self._hout_src)

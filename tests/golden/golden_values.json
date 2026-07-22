@@ -1,5 +1,5 @@
 {
-  "note": "Pure-fluid ORC sim via HEOS backend; mixing-rule Tc/Pc via HEOS pure props. Original REFPROP-only _simulation is not runnable on non-REFPROP machines; ORC formulas were ported verbatim. Regenerate with tests/capture_golden.py.",
+  "note": "Pure-fluid ORC sim via HEOS backend; mixing-rule Tc/Pc via HEOS pure props. Original REFPROP-only _simulation is not runnable on non-REFPROP machines; ORC formulas were ported verbatim. sink_pinch/source_pinch include the default pinch_cond_k=10 / pinch_evap_k=20 minimum-approach offsets (Chys et al. 2012 Table 2). Regenerate with tests/capture_golden.py.",
   "backend": "HEOS",
   "orc": [
     {
@@ -7,48 +7,48 @@
       "p_evap": 23.0,
       "p_cond": 4.0,
       "eta": 0.09049966233629295,
-      "sink_pinch": 26.06939605509382,
-      "source_pinch": -61.25625390074947
+      "sink_pinch": 36.06939605509382,
+      "source_pinch": -41.25625390074947
     },
     {
       "wf": "Propane",
       "p_evap": 18.0,
       "p_cond": 3.0,
       "eta": 0.10354617466753598,
-      "sink_pinch": 49.17607667603522,
-      "source_pinch": -82.71518269435114
+      "sink_pinch": 59.17607667603522,
+      "source_pinch": -62.71518269435114
     },
     {
       "wf": "R245fa",
       "p_evap": 8.0,
       "p_cond": 1.0,
       "eta": 0.09597078418754748,
-      "sink_pinch": 20.279858812069676,
-      "source_pinch": -54.446441568461125
+      "sink_pinch": 30.279858812069676,
+      "source_pinch": -34.446441568461125
     },
     {
       "wf": "Pentane",
       "p_evap": 6.0,
       "p_cond": 1.0,
       "eta": 0.08901601458462977,
-      "sink_pinch": -0.6741892395808122,
-      "source_pinch": -34.47990134549485
+      "sink_pinch": 9.325810760419188,
+      "source_pinch": -14.479901345494852
     },
     {
       "wf": "Toluene",
       "p_evap": 3.0,
       "p_cond": 0.2,
       "eta": 0.11253935319091372,
-      "sink_pinch": -26.924036982524512,
-      "source_pinch": 18.81640316955918
+      "sink_pinch": -16.924036982524512,
+      "source_pinch": 38.81640316955918
     },
     {
       "wf": "Ammonia",
       "p_evap": 30.0,
       "p_cond": 5.0,
       "eta": 0.10052502490145805,
-      "sink_pinch": 30.850512326404385,
-      "source_pinch": -69.26014074677454
+      "sink_pinch": 40.850512326404385,
+      "source_pinch": -49.26014074677454
     }
   ],
   "mixing_rules": [

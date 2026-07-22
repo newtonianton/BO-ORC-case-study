@@ -34,7 +34,10 @@ if str(REPO_ROOT) not in sys.path:
 # Default locations. DATA_ROOT can be overridden with the ORC_BO_BENCH environment variable
 # so a renamed results tree does not need a code edit.
 DATA_ROOT = Path(os.environ.get("ORC_BO_BENCH", REPO_ROOT / "bench" / "full3"))
-FIG_DIR = Path(__file__).resolve().parent / "figures"
+# Figures for each results tree land in their own subfolder (viz/figures/<tree-name>/), so
+# renders from different experiments (full3, cost01, cost005, ...) coexist for side-by-side
+# comparison instead of overwriting each other.
+FIG_DIR = Path(__file__).resolve().parent / "figures" / DATA_ROOT.name
 
 # ---- Palette (validated reference instance) -------------------------------------------
 INK = "#0b0b0b"          # primary text
